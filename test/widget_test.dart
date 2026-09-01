@@ -1,30 +1,29 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+import 'package:esp_loader/main.dart';
+import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:esp_loader/main.dart';
-
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  Future<void> pumpDesktop(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(const EspLoaderApp());
+    await tester.pumpAndSettle();
+  }
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  testWidgets('shows the desktop navigation', (tester) async {
+    await pumpDesktop(tester);
+    expect(find.text('ESP Loader'), findsOneWidget);
+    expect(find.text('Programmazione'), findsWidgets);
+    expect(find.text('Monitor'), findsOneWidget);
+    expect(find.text('Plot'), findsOneWidget);
+    expect(find.text('Impostazioni'), findsOneWidget);
+  });
+  testWidgets('starts simulated flash', (tester) async {
+    await pumpDesktop(tester);
+    await tester.tap(find.byKey(const Key('start-flash-button')));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(find.textContaining('Scrittura in corso'), findsOneWidget);
   });
 }
