@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.ariosa" "\0"
-            VALUE "FileDescription", "esp_loader" "\0"
+            VALUE "FileDescription", "ESP Loader" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "esp_loader" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.ariosa. All rights reserved." "\0"
             VALUE "OriginalFilename", "esp_loader.exe" "\0"
-            VALUE "ProductName", "esp_loader" "\0"
+            VALUE "ProductName", "ESP Loader" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

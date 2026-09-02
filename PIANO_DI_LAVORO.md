@@ -1,272 +1,216 @@
-# ESP Loader — piano di lavoro
+# ESP Loader — Work Plan
 
-## 1. Obiettivo
+## 1. Goal
 
-Realizzare un'applicazione Flutter Desktop per Windows e Linux dedicata a due funzioni principali:
+Build a Windows and Linux Flutter desktop application for:
 
-1. programmazione di microcontrollori Espressif tramite le utility ufficiali da linea di comando;
-2. monitoraggio della porta seriale, con passaggio automatico dalla programmazione al monitor.
+1. programming Espressif microcontrollers through the official command-line
+   tools;
+2. monitoring a serial port, with automatic transitions between programming
+   and monitoring.
 
-L'applicazione deve offrire un'interfaccia operativa semplice e mantenere l'output testuale completo dei comandi in un pannello tecnico normalmente nascosto.
+The interface must remain simple for operators while retaining complete command
+output in a normally hidden technical panel.
 
-## 2. Progetti di riferimento
+## 2. Reference projects
 
 ### `proto_flutter`
 
-Viene usato come riferimento per:
-
-- struttura di un progetto Flutter multipiattaforma;
-- target Windows e Linux;
-- script di rilascio Windows;
-- distribuzione Linux tramite AppImage;
-- convenzioni generali del progetto desktop.
+Reference for Flutter desktop structure, Windows and Linux targets, Windows
+release scripts, Linux AppImage distribution, and general desktop conventions.
 
 ### `collaudo_ariosa_global`
 
-Viene usato come riferimento per:
+Reference for external `esptool` processes, asynchronous output capture, serial
+port discovery, binary selection, flash erasing, process interruption, Windows
+tool bundling, Fluent UI, and desktop-window handling.
 
-- esecuzione di `esptool` come processo esterno;
-- acquisizione asincrona di standard output e standard error;
-- rilevamento delle porte seriali;
-- selezione di file binari e indirizzi;
-- cancellazione della flash;
-- interruzione del processo;
-- inclusione di `esptool` nella distribuzione Windows;
-- interfaccia Fluent e gestione della finestra desktop.
+## 3. Design principles
 
-Il codice esistente sarà adattato e separato dalle parti specifiche del banco di collaudo.
+- One codebase for Windows and Linux.
+- Separate UI, configuration, serial services, and external processes.
+- Keep operational logic independent from Flutter widgets.
+- Ensure exclusive access to a port between flashing and monitoring.
+- Retain technical output without showing it in the primary workflow.
+- Support persistent configuration and reusable programming profiles.
+- Remain usable at reduced window sizes.
+- Make long operations cancellable and expose status and progress.
+- Keep user-facing strings ready for future localization and language selection.
 
-## 3. Principi progettuali
+## 4. Current status — September 2, 2026
 
-- Un'unica base di codice per Windows e Linux.
-- Separazione fra interfaccia, configurazione, servizi seriali e processi esterni.
-- Nessuna dipendenza della logica operativa dai widget Flutter.
-- Esclusione reciproca fra flash e monitor sulla stessa porta.
-- Output tecnico conservato, ma non mostrato nell'interfaccia principale.
-- Configurazioni persistenti e profili di programmazione riutilizzabili.
-- Interfaccia utilizzabile anche con finestre di dimensioni ridotte.
-- Operazioni lunghe sempre annullabili e accompagnate da stato e avanzamento.
+| Area | Status | Notes |
+| --- | --- | --- |
+| Desktop UI and navigation | **complete** | Programming, Monitor, Plot, and Settings pages are available |
+| `.bin` selection | **complete** | File picker on every row, with row addition and removal |
+| Firmware-folder import | **complete** | Selecting `bootloader.bin` imports all sibling `.bin` files |
+| ESP-IDF build import | **complete** | Imports paths, offsets, target, and settings from `flasher_args.json` |
+| Partition table | **complete** | Parses `partitions.bin` and populates matching offsets |
+| Serial-port enumeration | **partial** | Real on the Programming page for Windows and Linux; Monitor is simulated |
+| Device test | **complete** | Non-destructive chip and flash-size detection through `esptool flash-id` |
+| Firmware/device compatibility | **complete** | Compares manifest target with detected hardware and blocks mismatches |
+| Flash parameters | **partial** | Updated by Test and editable, but not yet used for real flashing |
+| Programming and erasing | **simulated** | No write or erase command is executed yet |
+| Serial monitor | **simulated** | UI exists; serial communication is not connected |
+| Autoload | **simulated** | UI exists; file watching is not implemented |
+| Plot | **simulated** | UI and data are demonstrative |
+| Native icons | **complete** | Windows resources and Linux GTK/desktop integration |
+| Distribution | **partial** | Linux bundle verified; AppImage generation remains to be implemented |
+| Automated tests | **partial** | Partition parser, esptool output, Windows port parsing, and core widgets |
 
-## 4. Fasi di lavoro
+Partition offsets come from `partitions.bin`. Bootloader, partition-table, and
+`boot_app0.bin` offsets are editable suggestions based on the ESP family and
+Espressif conventions.
 
-### Fase 1 — Demo dell'interfaccia utente
+## 5. Delivery phases
 
-#### Scopo
+### Phase 1 — UI demonstration — complete
 
-Costruire direttamente in Flutter una demo navigabile, alimentata da dati simulati e priva inizialmente di accesso reale alla seriale e a `esptool`.
+- Fluent light and dark themes;
+- desktop navigation and Programming, Monitor, Plot, and Settings pages;
+- normally hidden technical panel;
+- simulated programming, success, error, cancellation, monitor, and plot states;
+- responsive Windows/Linux layout;
+- dynamic binary list with address and individual enablement;
+- add/remove rows; reordering remains planned;
+- simulated Program, Stop, and Erase flash actions;
+- binary combination remains planned.
 
-#### Contenuti
+### Phase 2 — Specification consolidation
 
-- tema Fluent chiaro e scuro;
-- finestra desktop e navigazione principale;
-- pagine **Programmazione**, **Monitor**, **Plot** e **Impostazioni**;
-- pannello tecnico/log normalmente nascosto;
-- stati simulati di attesa, programmazione, successo, errore e cancellazione;
-- layout adattabile a Windows e Linux.
+- finalize supported Espressif families;
+- define the required Flash Download Tool feature matrix;
+- define binary-row limits and behavior;
+- define profile format and portability;
+- finalize autoload, monitor, and plot behavior;
+- decide whether ELF decoding is required;
+- prioritize essential and advanced features.
 
-#### Pagina Programmazione
+### Phase 3 — Application architecture
 
-- selezione del chip Espressif;
-- selezione e aggiornamento della porta seriale;
-- baud rate di caricamento;
-- lista dinamica di file `.bin` con indirizzo e abilitazione individuale;
-- aggiunta, rimozione e riordinamento dei binari;
-- SPI mode, frequenza e dimensione flash;
-- comandi Programma, Interrompi, Cancella flash e Combina binari;
-- attivazione autoload;
-- opzione per aprire automaticamente il monitor al termine;
-- indicatore di avanzamento e risultato sintetico.
+Create separate modules for configuration and persistence, chip models, flash
+targets, profiles, port discovery, Espressif processes, programming, erasing,
+serial monitoring, autoload, technical logging, and operation coordination.
 
-#### Pagina Monitor
+A central state machine will cover idle, monitor connected, preparing,
+programming, erasing, completed, error, and cancellation states.
 
-- porta, baud rate standard o personalizzato;
-- data bit, stop bit, parità e controllo di flusso;
-- aggiorna porte, connetti, disconnetti e reset;
-- terminale con pausa, cancellazione, ritorno a capo e timestamp;
-- limite massimo di righe;
-- ricerca e filtri include/escludi;
-- copia completa, filtrata o visibile;
-- salvataggio del log;
-- campo per l'invio di testo o dati;
-- dati seriali simulati per valutare usabilità e prestazioni visive.
+### Phase 4 — Espressif tool integration
 
-#### Pagina Plot
+- detect bundled tools automatically;
+- provide platform-specific Windows and Linux executables;
+- allow a manual tool path as fallback;
+- build verifiable command arguments;
+- capture stdout and stderr in real time;
+- interpret progress and relevant status messages;
+- implement timeout and controlled interruption;
+- preserve the complete technical log.
 
-- area grafico dimostrativa;
-- selezione delle serie;
-- pausa, pulizia e finestra temporale;
-- anteprima di dati numerici simulati.
+### Phase 5 — Programming engine
 
-#### Criteri di completamento
+- select or detect the chip;
+- program multiple binaries at configurable addresses;
+- apply baud, SPI mode, frequency, and flash size;
+- erase and stop operations;
+- validate files, addresses, sizes, and overlaps before writing;
+- save, duplicate, export, and import profiles;
+- optionally combine binaries;
+- show a clear final result without requiring the technical log.
 
-- la demo si avvia su Linux e mantiene la struttura necessaria per Windows;
-- tutte le pagine sono navigabili;
-- i controlli principali reagiscono e mostrano stati simulati;
-- il pannello tecnico resta nascosto nel normale flusso operativo;
-- la revisione con l'utente produce un elenco di modifiche e funzioni approvate.
+### Phase 6 — Autoload
 
-### Fase 2 — Consolidamento delle specifiche
+- watch one or more configured files;
+- debounce repeated compiler events;
+- verify file stability and readability;
+- prevent duplicate programming;
+- queue changes detected during a flash operation;
+- expose watching, change detected, waiting, flashing, and result states;
+- allow temporary suspension;
+- optionally reopen the monitor after successful programming.
 
-Definire dopo la revisione della demo:
+### Phase 7 — Serial monitor
 
-- famiglie di chip Espressif supportate;
-- matrice precisa delle funzioni da replicare da Flash Download Tool;
-- numero massimo e comportamento delle righe di caricamento;
-- formato e portabilità dei profili;
-- regole definitive dell'autoload;
-- funzionalità definitive del monitor e del plot;
-- necessità e comportamento della decodifica tramite file ELF;
-- priorità fra funzioni essenziali e avanzate.
+- enumerate and refresh Windows/Linux ports;
+- configure line settings fully;
+- open and close robustly;
+- receive without blocking the UI;
+- support configurable text and hexadecimal display;
+- transmit with a configurable terminator;
+- control DTR/RTS and reset when supported;
+- provide pause, bounded buffers, timestamps, search, filters, copy, and save;
+- handle device removal and reconnection.
 
-### Fase 3 — Architettura applicativa
-
-Creare moduli separati per:
-
-- configurazione e persistenza;
-- modelli di chip, target binari e profili;
-- rilevamento porte;
-- gestione dei processi Espressif;
-- programmazione e cancellazione flash;
-- monitor seriale;
-- autoload;
-- log tecnico;
-- coordinamento delle operazioni.
-
-Una macchina a stati centrale controllerà almeno gli stati: inattivo, monitor collegato, preparazione, programmazione, cancellazione, completato, errore e annullamento.
-
-### Fase 4 — Integrazione delle utility Espressif
-
-- individuazione automatica dell'eseguibile distribuito con l'app;
-- eseguibili distinti per Windows e Linux;
-- percorso manuale come fallback;
-- costruzione verificabile degli argomenti da linea di comando;
-- acquisizione in tempo reale di output ed errori;
-- interpretazione di stato, progresso e messaggi rilevanti;
-- timeout e interruzione controllata;
-- conservazione del log tecnico completo.
-
-### Fase 5 — Motore di programmazione
-
-- selezione o rilevamento del chip;
-- programmazione di uno o più binari a indirizzi configurabili;
-- scelta di baud rate, SPI mode, frequenza e dimensione flash;
-- cancellazione flash;
-- arresto dell'operazione;
-- verifica preventiva di file, indirizzi e sovrapposizioni;
-- profili salvabili, duplicabili, esportabili e importabili;
-- eventuale combinazione dei binari;
-- risultato finale comprensibile senza consultare il log tecnico.
-
-Le funzioni avanzate o legate alla sicurezza verranno introdotte solo dopo la definizione della matrice della Fase 2.
-
-### Fase 6 — Autoload
-
-- osservazione di uno o più file configurati;
-- debounce degli eventi ripetuti generati dal compilatore;
-- verifica che il file sia stabile, chiuso e leggibile;
-- prevenzione di programmazioni duplicate;
-- accodamento di una modifica rilevata durante un flash;
-- stato visibile: in ascolto, modifica rilevata, attesa, flash e risultato;
-- possibilità di sospendere temporaneamente l'autoload;
-- passaggio opzionale al monitor dopo ogni flash riuscito.
-
-### Fase 7 — Monitor seriale
-
-- enumerazione e aggiornamento delle porte su Windows e Linux;
-- configurazione completa della linea seriale;
-- apertura e chiusura robuste;
-- ricezione continua senza bloccare l'interfaccia;
-- decodifica testuale configurabile e visualizzazione esadecimale;
-- trasmissione con terminatore configurabile;
-- controllo di DTR e RTS quando disponibile;
-- reset del dispositivo;
-- pausa visuale senza perdita opzionale dei dati;
-- buffer circolare con limite configurabile;
-- timestamp, ricerca, filtri, copia e salvataggio;
-- gestione di rimozione del dispositivo e riconnessione.
-
-### Fase 8 — Coordinamento flash e monitor
-
-Flusso previsto:
+### Phase 8 — Flash/monitor coordination
 
 ```text
-chiusura monitor → acquisizione esclusiva della porta → flash
-→ eventuale reset → attesa configurabile → riapertura monitor
+close monitor → acquire exclusive port → flash
+→ optional reset → configurable delay → reopen monitor
 ```
 
-Il coordinamento dovrà funzionare anche con autoload attivo e gestire errori, cancellazioni e scollegamenti fisici.
+This must also work with autoload and handle failures, cancellation, and physical
+disconnection.
 
-### Fase 9 — Plot e analisi
+### Phase 9 — Plotting and analysis
 
-- estrazione di valori numerici tramite separatore, espressione regolare o formato strutturato;
-- visualizzazione di più serie;
-- pausa, zoom, pulizia e finestra temporale;
-- visualizzazione coordinata con il terminale;
-- eventuale decodifica degli indirizzi tramite ELF, se confermata nella Fase 2.
+- extract numeric values using separators, regular expressions, or structured
+  formats;
+- display multiple series;
+- support pause, zoom, clear, and time windows;
+- coordinate the plot with the terminal;
+- optionally decode addresses through ELF files if approved in Phase 2.
 
-### Fase 10 — Impostazioni e profili
+### Phase 10 — Settings and profiles
 
-Persistenza di:
+Persist the last port and serial configuration, programming profiles, files,
+addresses, flash parameters, autoload options, post-flash behavior, monitor
+filters, theme, window size, and window position. Prefer relative paths and
+support profile import/export.
 
-- ultima porta e configurazione seriale;
-- profili di programmazione;
-- file, indirizzi e parametri flash;
-- opzioni autoload;
-- comportamento post-flash;
-- filtri del monitor;
-- tema, dimensione e posizione della finestra.
+### Phase 11 — Testing
 
-I profili useranno percorsi relativi quando possibile e potranno essere esportati e importati.
+- command-construction tests;
+- Espressif-output parser tests;
+- flash-segment validation tests;
+- autoload and debounce tests;
+- serial buffer, search, and filter tests;
+- virtual-port tests;
+- physical-device tests for every supported family;
+- disconnection, timeout, incomplete-file, and interrupted-flash tests;
+- Windows and Linux verification.
 
-### Fase 11 — Test e collaudo
+### Phase 12 — Distribution
 
-- test della costruzione dei comandi;
-- test del parser dell'output Espressif;
-- test delle validazioni dei segmenti flash;
-- test dell'autoload e del debounce;
-- test dei buffer, della ricerca e dei filtri seriali;
-- test con porte seriali virtuali;
-- test su dispositivi reali per ogni famiglia supportata;
-- test di scollegamento, timeout, file incompleto e flash interrotto;
-- verifica su Windows e Linux.
+- Windows bundle and optional portable executable;
+- Linux AppImage;
+- platform-specific Espressif utilities and licenses;
+- startup dependency checks;
+- Linux serial-permission diagnostics;
+- installation and troubleshooting guide.
 
-### Fase 12 — Distribuzione
+## 6. Milestones
 
-- bundle Windows;
-- eventuale eseguibile Windows portabile;
-- bundle Linux e AppImage;
-- inclusione delle utility Espressif per la piattaforma corretta;
-- inclusione delle licenze;
-- controllo iniziale delle dipendenze;
-- diagnostica dei permessi seriali Linux;
-- guida di installazione e risoluzione problemi.
-
-## 5. Traguardi
-
-| Traguardo | Risultato |
+| Milestone | Result |
 | --- | --- |
-| M1 | Demo UI approvata |
-| M2 | Specifiche funzionali congelate |
-| M3 | Flash reale funzionante su Windows e Linux |
-| M4 | Autoload affidabile |
-| M5 | Monitor seriale completo |
-| M6 | Integrazione automatica flash-monitor |
-| M7 | Plot e funzioni avanzate concordate |
-| M8 | Release collaudata e distribuibile |
+| M1 | UI demonstration approved |
+| M2 | Functional specification frozen |
+| M3 | Real flashing works on Windows and Linux |
+| M4 | Reliable autoload |
+| M5 | Complete serial monitor |
+| M6 | Automatic flash/monitor integration |
+| M7 | Agreed plotting and advanced features |
+| M8 | Tested, distributable release |
 
-## 6. Decisione tecnologica per la demo
+## 7. Next operational step
 
-La demo viene realizzata direttamente in Flutter, non in HTML/CSS/JavaScript.
+Connect **Program** to a real `esptool` service while keeping process logic out
+of the widgets. Before writing, the service must:
 
-Motivazioni:
+1. validate the port, files, addresses, sizes, and overlaps;
+2. build and expose the `write-flash` command for inspection;
+3. capture output, errors, and progress in real time;
+4. support controlled process interruption;
+5. report a clear result and preserve the complete technical log.
 
-- i controlli desktop definitivi possono essere valutati subito;
-- la demo diventa la base reale dell'applicazione;
-- non è necessaria una riscrittura successiva;
-- gestione finestra, dialoghi file, scorciatoie e layout vengono verificati nel contesto corretto;
-- è possibile sostituire gradualmente i dati simulati con i servizi reali;
-- emergono presto eventuali differenze fra Windows e Linux.
-
-## 7. Primo passo operativo
-
-Creare il progetto Flutter desktop in `esp_loader`, limitato ai target Windows e Linux, e implementare la struttura navigabile della Fase 1 prima di collegare dipendenze hardware o processi esterni.
+Real flash erasing will only be connected after this validation path. Serial
+monitoring, flash coordination, and autoload follow. The final Linux release
+will be generated as an AppImage.

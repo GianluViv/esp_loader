@@ -1,7 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:fluent_ui/fluent_ui.dart';
+
+import 'esptool_service.dart';
+import 'firmware_bundle_service.dart';
+import 'partition_table.dart';
+import 'serial_port_service.dart';
 
 void main() => runApp(const EspLoaderApp());
 
@@ -43,23 +50,6 @@ class _AppShellState extends State<AppShell> {
   bool showLog = false;
   @override
   Widget build(BuildContext context) => NavigationView(
-    titleBar: TitleBar(
-      isBackButtonVisible: false,
-      title: const Text('ESP Loader'),
-      endHeader: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const _Badge(),
-          const SizedBox(width: 8),
-          IconButton(
-            key: const Key('technical-log-button'),
-            icon: Icon(showLog ? FluentIcons.view : FluentIcons.hide3),
-            onPressed: () => setState(() => showLog = !showLog),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-    ),
     pane: NavigationPane(
       selected: selected,
       onChanged: (v) => setState(() => selected = v),
@@ -67,8 +57,11 @@ class _AppShellState extends State<AppShell> {
       items: [
         PaneItem(
           icon: const Icon(FluentIcons.installation),
-          title: const Text('Programmazione'),
-          body: const FlashPage(),
+          title: const Text('Programming'),
+          body: FlashPage(
+            showLog: showLog,
+            onToggleLog: () => setState(() => showLog = !showLog),
+          ),
         ),
         PaneItem(
           icon: const Icon(FluentIcons.command_prompt),
@@ -85,7 +78,7 @@ class _AppShellState extends State<AppShell> {
         PaneItemSeparator(),
         PaneItem(
           icon: const Icon(FluentIcons.settings),
-          title: const Text('Impostazioni'),
+          title: const Text('Settings'),
           body: SettingsPage(mode: widget.mode, onMode: widget.onMode),
         ),
       ],
@@ -100,25 +93,386 @@ class _AppShellState extends State<AppShell> {
 }
 
 class FlashPage extends StatefulWidget {
-  const FlashPage({super.key});
+  const FlashPage({
+    super.key,
+    required this.showLog,
+    required this.onToggleLog,
+  });
+
+  final bool showLog;
+  final VoidCallback onToggleLog;
   @override
   State<FlashPage> createState() => _FlashPageState();
+}
+
+class _FlashTarget {
+  _FlashTarget(this.address, this.path)
+    : enabled = true,
+      addressController = TextEditingController(text: address),
+      pathController = TextEditingController(text: path);
+
+  bool enabled;
+  String address;
+  String path;
+  final TextEditingController addressController;
+  final TextEditingController pathController;
+
+  void setAddress(String value) {
+    address = value;
+    addressController.text = value;
+  }
+
+  void setPath(String value) {
+    path = value;
+    pathController.text = value;
+  }
+
+  void dispose() {
+    addressController.dispose();
+    pathController.dispose();
+  }
 }
 
 class _FlashPageState extends State<FlashPage> {
   bool autoload = true, monitorAfter = true, busy = false;
   double progress = 0;
   Timer? timer;
-  String chip = 'ESP32-S3', port = 'COM7 · USB JTAG/serial', baud = '921600';
-  final targets = <List<Object>>[
-    [true, '0x0000', 'bootloader.bin'],
-    [true, '0x8000', 'partition-table.bin'],
-    [true, '0x10000', 'esp_loader_demo.bin'],
+  Timer? connectionMessageTimer;
+  Timer? compatibilityMessageTimer;
+  String chip = 'ESP32-S3', port = '', baud = '921600';
+  String spiMode = 'DIO', flashFrequency = '80 MHz', flashSize = '16 MB';
+  String detectedConfiguration = 'Not detected';
+  List<SerialPortInfo> serialPorts = const [];
+  bool scanningPorts = false;
+  String? serialError;
+  bool testingConnection = false;
+  String? connectionMessage;
+  bool connectionTestFailed = false;
+  String? buildChip;
+  String? detectedChip;
+  String? compatibilityMessage;
+  bool compatibilityFailed = false;
+  String? targetMessage;
+  bool targetMessageIsError = false;
+  final targets = <_FlashTarget>[
+    _FlashTarget('0x0000', 'bootloader.bin'),
+    _FlashTarget('0x8000', 'partitions.bin'),
+    _FlashTarget('0x10000', 'esp_loader_demo.bin'),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshSerialPorts();
+  }
+
+  Future<void> _refreshSerialPorts() async {
+    setState(() {
+      scanningPorts = true;
+      serialError = null;
+    });
+    try {
+      final found = await SerialPortService.discover();
+      if (!mounted) return;
+      setState(() {
+        serialPorts = found;
+        if (!found.any((item) => item.port == port)) {
+          port = found.isEmpty ? '' : found.first.port;
+        }
+        scanningPorts = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        scanningPorts = false;
+        serialError = error.toString();
+      });
+    }
+  }
+
+  Future<void> _testConnection() async {
+    if (port.isEmpty || testingConnection) return;
+    connectionMessageTimer?.cancel();
+    setState(() {
+      testingConnection = true;
+      connectionMessage = null;
+    });
+    try {
+      final result = await EspToolService.testConnection(
+        port: port,
+        baud: baud,
+      );
+      if (!mounted) return;
+      setState(() {
+        chip = result.chip;
+        detectedChip = result.chip;
+        spiMode = 'DIO';
+        flashFrequency = _recommendedFlashFrequency(result.chip);
+        if (result.flashSize != null) flashSize = result.flashSize!;
+        detectedConfiguration = result.flashSize == null
+            ? '${result.chip} · flash size not detected'
+            : '${result.chip} · ${result.flashSize}';
+        for (final target in targets.where(
+          (item) => _isBootloader(item.path),
+        )) {
+          target.setAddress(_bootloaderOffset);
+        }
+        testingConnection = false;
+        connectionTestFailed = false;
+        connectionMessage = '${result.chip} successfully detected on $port.';
+        _updateCompatibility();
+      });
+      connectionMessageTimer = Timer(const Duration(seconds: 5), () {
+        if (!mounted || connectionTestFailed) return;
+        setState(() => connectionMessage = null);
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        testingConnection = false;
+        connectionTestFailed = true;
+        connectionMessage = _connectionError(error);
+      });
+    }
+  }
+
+  String _connectionError(Object error) {
+    if (error is ProcessException) {
+      final details = error.message.trim();
+      return details.isEmpty
+          ? 'No ESP detected on $port.'
+          : 'No ESP detected on $port. $details';
+    }
+    return error.toString().replaceFirst('Bad state: ', '');
+  }
+
+  String _recommendedFlashFrequency(String detectedChip) {
+    const fastFlashChips = {'ESP32-S3', 'ESP32-C5', 'ESP32-C6', 'ESP32-P4'};
+    return fastFlashChips.contains(detectedChip) ? '80 MHz' : '40 MHz';
+  }
+
+  void _updateCompatibility() {
+    compatibilityMessageTimer?.cancel();
+    if (buildChip == null || detectedChip == null) {
+      compatibilityMessage = buildChip == null
+          ? null
+          : 'Firmware target: $buildChip. Press Test to verify the device.';
+      compatibilityFailed = false;
+      return;
+    }
+    compatibilityFailed = buildChip != detectedChip;
+    compatibilityMessage = compatibilityFailed
+        ? 'Incompatible device: the firmware targets $buildChip, but the connected device is $detectedChip.'
+        : 'Compatible device: firmware and connected hardware both target $buildChip.';
+    if (!compatibilityFailed) {
+      compatibilityMessageTimer = Timer(const Duration(seconds: 5), () {
+        if (!mounted || compatibilityFailed) return;
+        setState(() => compatibilityMessage = null);
+      });
+    }
+  }
+
   @override
   void dispose() {
     timer?.cancel();
+    connectionMessageTimer?.cancel();
+    compatibilityMessageTimer?.cancel();
+    for (final target in targets) {
+      target.dispose();
+    }
     super.dispose();
+  }
+
+  String _fileName(String path) => path.split(RegExp(r'[\\/]')).last;
+
+  bool _isBootloader(String path) =>
+      _fileName(path).toLowerCase().contains('bootloader');
+
+  bool _isPartitionTable(String path) {
+    final name = _fileName(path).toLowerCase();
+    return name == 'partitions.bin' ||
+        name == 'partition-table.bin' ||
+        name == 'partition_table.bin' ||
+        name.contains('partition');
+  }
+
+  String get _bootloaderOffset => chip == 'ESP32' ? '0x1000' : '0x0000';
+
+  String _hex(int value) => '0x${value.toRadixString(16).toUpperCase()}';
+
+  Future<void> _pickTarget(_FlashTarget target) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['bin'],
+      dialogTitle: 'Select binary file',
+    );
+    final path = result?.files.single.path;
+    if (path == null) return;
+
+    target.setPath(path);
+    try {
+      final bundle = await FirmwareBundleService.findForBinary(path);
+      if (bundle != null) {
+        _applyFirmwareBundle(bundle);
+        if (mounted) setState(() {});
+        return;
+      }
+    } on Object catch (error) {
+      targetMessageIsError = true;
+      targetMessage = 'Unable to read build metadata: $error';
+    }
+    if (_isBootloader(path)) {
+      target.setAddress(_bootloaderOffset);
+      await _loadSiblingBins(path);
+    }
+    if (_isPartitionTable(path)) {
+      target.setAddress('0x8000');
+      await _applyPartitionTable(path);
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _applyFirmwareBundle(FirmwareBundle bundle) {
+    for (final target in targets) {
+      target.dispose();
+    }
+    targets
+      ..clear()
+      ..addAll(
+        bundle.images.map((image) => _FlashTarget(image.address, image.path)),
+      );
+    buildChip = bundle.chip;
+    if (bundle.chip != null) chip = bundle.chip!;
+    if (bundle.flashMode != null) spiMode = bundle.flashMode!.toUpperCase();
+    if (bundle.flashFrequency != null) {
+      flashFrequency = bundle.flashFrequency!;
+    }
+    if (bundle.flashSize != null) flashSize = bundle.flashSize!;
+    targetMessageIsError = false;
+    targetMessage =
+        '${bundle.images.length} images imported from flasher_args.json.';
+    _updateCompatibility();
+  }
+
+  Future<void> _loadSiblingBins(String bootloaderPath) async {
+    try {
+      final files =
+          File(bootloaderPath).parent
+              .listSync()
+              .whereType<File>()
+              .where((file) => file.path.toLowerCase().endsWith('.bin'))
+              .toList()
+            ..sort((a, b) => _fileName(a.path).compareTo(_fileName(b.path)));
+      final imported = <_FlashTarget>[];
+      for (final file in files) {
+        final existing = targets.where(
+          (target) =>
+              target.path == file.path ||
+              _fileName(target.path).toLowerCase() ==
+                  _fileName(file.path).toLowerCase(),
+        );
+        if (existing.isNotEmpty) {
+          existing.first.setPath(file.path);
+          imported.add(existing.first);
+        } else {
+          imported.add(_FlashTarget('0x', file.path));
+        }
+      }
+      for (final oldTarget in targets.where(
+        (target) => !imported.contains(target),
+      )) {
+        oldTarget.dispose();
+      }
+      targets
+        ..clear()
+        ..addAll(imported);
+      final partition = targets.where(
+        (target) => _isPartitionTable(target.path),
+      );
+      if (partition.isNotEmpty) {
+        partition.first.setAddress('0x8000');
+        await _applyPartitionTable(partition.first.path);
+      }
+    } on FileSystemException catch (error) {
+      targetMessageIsError = true;
+      targetMessage = 'Unable to read the folder: ${error.message}';
+    }
+  }
+
+  Future<void> _applyPartitionTable(String path) async {
+    try {
+      final partitions = parseEspPartitionTable(await File(path).readAsBytes());
+      final appTargets = targets
+          .where(
+            (target) =>
+                !_isBootloader(target.path) &&
+                !_isPartitionTable(target.path) &&
+                target.path.toLowerCase().endsWith('.bin'),
+          )
+          .toList();
+      final preferredApp = partitions.where((entry) => entry.isApp).toList()
+        ..sort((a, b) {
+          int rank(EspPartition p) =>
+              p.subtype == 0 ? 0 : (p.subtype == 0x10 ? 1 : 2);
+          return rank(a).compareTo(rank(b));
+        });
+
+      for (final target in appTargets) {
+        final name = _fileName(target.path)
+            .toLowerCase()
+            .replaceAll('.bin', '');
+        if (name.contains('boot_app0')) {
+          target.setAddress('0xE000');
+          continue;
+        }
+        EspPartition? match;
+        for (final entry in partitions) {
+          final label = entry.label.toLowerCase();
+          if (name == label || name.contains(label)) {
+            match = entry;
+            break;
+          }
+        }
+        if (match != null) target.setAddress(_hex(match.offset));
+      }
+      final unresolved =
+          appTargets
+              .where((target) => target.addressController.text == '0x')
+              .where(
+                (target) => !target.path.toLowerCase().contains('boot_app0'),
+              )
+              .toList()
+            ..sort((a, b) {
+              int size(_FlashTarget target) {
+                try {
+                  return File(target.path).lengthSync();
+                } on FileSystemException {
+                  return 0;
+                }
+              }
+
+              return size(b).compareTo(size(a));
+            });
+      if (unresolved.isNotEmpty && preferredApp.isNotEmpty) {
+        unresolved.first.setAddress(_hex(preferredApp.first.offset));
+      }
+      targetMessageIsError = false;
+      targetMessage =
+          '${partitions.length} partitions read: binary addresses updated.';
+    } on Object catch (error) {
+      targetMessageIsError = true;
+      targetMessage = 'Unable to read partitions.bin: $error';
+    }
+  }
+
+  void _addTarget() {
+    setState(() => targets.add(_FlashTarget('0x', '')));
+  }
+
+  void _removeTarget(int index) {
+    final removed = targets.removeAt(index);
+    removed.dispose();
+    setState(() {});
   }
 
   void start() {
@@ -139,30 +493,48 @@ class _FlashPageState extends State<FlashPage> {
 
   @override
   Widget build(BuildContext context) => ScaffoldPage.scrollable(
-    header: const PageHeader(title: Text('Programmazione')),
+    header: const PageHeader(title: Text('Programming')),
     children: [
-      const _Intro(
-        'Prepara il dispositivo',
-        'Configura la porta e i segmenti da scrivere. Le operazioni di questa demo sono simulate.',
-      ),
-      const SizedBox(height: 16),
       _Card(
         child: Wrap(
           spacing: 14,
           runSpacing: 12,
           crossAxisAlignment: WrapCrossAlignment.end,
           children: [
-            _Combo('Chip', 170, chip, const [
-              'ESP32',
-              'ESP32-S3',
-              'ESP32-C3',
-              'ESP32-C6',
-            ], (v) => setState(() => chip = v)),
-            _Combo('Porta seriale', 250, port, const [
-              'COM7 · USB JTAG/serial',
-              'COM12 · CP210x UART',
-              '/dev/ttyUSB0',
-            ], (v) => setState(() => port = v)),
+            _Combo(
+              'Chip',
+              170,
+              chip,
+              const [
+                'ESP32',
+                'ESP32-S2',
+                'ESP32-S3',
+                'ESP32-C2',
+                'ESP32-C3',
+                'ESP32-C5',
+                'ESP32-C6',
+                'ESP32-H2',
+                'ESP32-P4',
+                'ESP8266',
+              ],
+              (v) {
+                setState(() {
+                  chip = v;
+                  for (final target in targets.where(
+                    (t) => _isBootloader(t.path),
+                  )) {
+                    target.setAddress(_bootloaderOffset);
+                  }
+                });
+              },
+            ),
+            _SerialCombo(
+              width: 250,
+              value: port,
+              ports: serialPorts,
+              scanning: scanningPorts,
+              onChanged: (value) => setState(() => port = value),
+            ),
             _Combo('Baud', 140, baud, const [
               '115200',
               '460800',
@@ -170,35 +542,111 @@ class _FlashPageState extends State<FlashPage> {
               '1500000',
             ], (v) => setState(() => baud = v)),
             Button(
-              onPressed: busy ? null : () {},
-              child: const Row(
+              onPressed:
+                  busy || scanningPorts || testingConnection || port.isEmpty
+                  ? null
+                  : _testConnection,
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(FluentIcons.refresh, size: 14),
-                  SizedBox(width: 6),
-                  Text('Aggiorna'),
+                  if (testingConnection)
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: ProgressRing(strokeWidth: 2),
+                    )
+                  else
+                    const Icon(FluentIcons.plug_connected, size: 14),
+                  const SizedBox(width: 6),
+                  const Text('Test'),
                 ],
               ),
+            ),
+            Button(
+              onPressed: busy || scanningPorts ? null : _refreshSerialPorts,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (scanningPorts)
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: ProgressRing(strokeWidth: 2),
+                    )
+                  else
+                    const Icon(FluentIcons.refresh, size: 14),
+                  const SizedBox(width: 6),
+                  Text(scanningPorts ? 'Scanning…' : 'Refresh'),
+                ],
+              ),
+            ),
+            IconButton(
+              key: const Key('technical-log-button'),
+              icon: Icon(widget.showLog ? FluentIcons.view : FluentIcons.hide3),
+              onPressed: widget.onToggleLog,
             ),
           ],
         ),
       ),
+      if (serialError != null || (!scanningPorts && serialPorts.isEmpty)) ...[
+        const SizedBox(height: 8),
+        InfoBar(
+          title: Text(
+            serialError == null
+                ? 'No serial ports found'
+                : 'Serial port detection',
+          ),
+          content: Text(
+            serialError ??
+                'Connect the device and press Refresh to scan again.',
+          ),
+          severity: serialError == null
+              ? InfoBarSeverity.warning
+              : InfoBarSeverity.error,
+        ),
+      ],
+      if (connectionMessage != null) ...[
+        const SizedBox(height: 8),
+        InfoBar(
+          title: Text(
+            connectionTestFailed ? 'Connection failed' : 'ESP detected',
+          ),
+          content: Text(connectionMessage!),
+          severity: connectionTestFailed
+              ? InfoBarSeverity.error
+              : InfoBarSeverity.success,
+        ),
+      ],
+      if (compatibilityMessage != null) ...[
+        const SizedBox(height: 8),
+        InfoBar(
+          title: Text(
+            compatibilityFailed
+                ? 'Firmware compatibility error'
+                : 'Firmware compatibility',
+          ),
+          content: Text(compatibilityMessage!),
+          severity: compatibilityFailed
+              ? InfoBarSeverity.error
+              : detectedChip == null
+              ? InfoBarSeverity.info
+              : InfoBarSeverity.success,
+        ),
+      ],
       const SizedBox(height: 14),
       _Card(
-        title: 'Immagini flash',
+        title: 'Flash images',
         trailing: Button(
-          onPressed: busy
-              ? null
-              : () => setState(() => targets.add([true, '0x', 'Scegli file…'])),
-          child: const Text('＋ Aggiungi binario'),
+          onPressed: busy ? null : _addTarget,
+          child: const Text('＋ Add binary'),
         ),
         child: Column(
           children: [
             const Row(
               children: [
                 SizedBox(width: 40),
-                SizedBox(width: 130, child: Text('Indirizzo')),
-                Expanded(child: Text('File binario')),
+                SizedBox(width: 130, child: Text('Address')),
+                Expanded(child: Text('Binary file')),
                 SizedBox(width: 35),
               ],
             ),
@@ -210,77 +658,112 @@ class _FlashPageState extends State<FlashPage> {
                     SizedBox(
                       width: 40,
                       child: Checkbox(
-                        checked: targets[i][0] as bool,
+                        checked: targets[i].enabled,
                         onChanged: busy
                             ? null
-                            : (v) => setState(() => targets[i][0] = v ?? false),
+                            : (v) => setState(
+                                () => targets[i].enabled = v ?? false,
+                              ),
                       ),
                     ),
                     SizedBox(
                       width: 120,
                       child: TextBox(
+                        controller: targets[i].addressController,
                         enabled: !busy,
-                        placeholder: targets[i][1] as String,
+                        placeholder: '0x',
+                        onChanged: (value) => targets[i].address = value,
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: TextBox(
-                        enabled: !busy,
-                        placeholder: targets[i][2] as String,
-                        suffix: const Padding(
-                          padding: EdgeInsets.only(right: 8),
-                          child: Icon(FluentIcons.open_file, size: 14),
-                        ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextBox(
+                              controller: targets[i].pathController,
+                              enabled: !busy,
+                              placeholder: 'Choose file…',
+                              onChanged: (value) => targets[i].path = value,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Button(
+                            onPressed: busy
+                                ? null
+                                : () => _pickTarget(targets[i]),
+                            child: const Icon(FluentIcons.open_file, size: 14),
+                          ),
+                        ],
                       ),
                     ),
                     IconButton(
                       icon: const Icon(FluentIcons.delete, size: 14),
-                      onPressed: busy
-                          ? null
-                          : () => setState(() => targets.removeAt(i)),
+                      onPressed: busy ? null : () => _removeTarget(i),
                     ),
                   ],
                 ),
               ),
+            if (targetMessage != null) ...[
+              const SizedBox(height: 8),
+              InfoBar(
+                title: Text(targetMessageIsError ? 'Error' : 'Partition table'),
+                content: Text(targetMessage!),
+                severity: targetMessageIsError
+                    ? InfoBarSeverity.error
+                    : InfoBarSeverity.success,
+              ),
+            ],
           ],
         ),
       ),
       const SizedBox(height: 14),
       _Card(
-        title: 'Configurazione flash',
+        title: 'Flash configuration',
         child: Wrap(
           spacing: 14,
           runSpacing: 12,
           children: [
-            _Combo('SPI mode', 135, 'DIO', const [
+            _Combo('SPI mode', 135, spiMode, const [
               'Keep',
               'QIO',
               'QOUT',
               'DIO',
               'DOUT',
-            ], (_) {}),
-            _Combo('Frequenza', 135, '80 MHz', const [
+            ], (value) => setState(() => spiMode = value)),
+            _Combo('Frequency', 135, flashFrequency, const [
               'Keep',
               '20 MHz',
               '40 MHz',
               '80 MHz',
-            ], (_) {}),
-            _Combo('Dimensione', 135, '16 MB', const [
-              'Rileva',
+            ], (value) => setState(() => flashFrequency = value)),
+            _Combo('Size', 135, flashSize, [
+              'Detect',
+              '1 MB',
               '2 MB',
               '4 MB',
               '8 MB',
               '16 MB',
-            ], (_) {}),
+              '32 MB',
+              if (!const {
+                'Detect',
+                '1 MB',
+                '2 MB',
+                '4 MB',
+                '8 MB',
+                '16 MB',
+                '32 MB',
+              }.contains(flashSize))
+                flashSize,
+            ], (value) => setState(() => flashSize = value)),
             SizedBox(
               width: 190,
               child: InfoLabel(
-                label: 'Rilevamento',
+                label: 'Detection',
                 child: Padding(
                   padding: EdgeInsets.only(top: 7),
                   child: Text(
-                    'ESP32-S3 · 16 MB',
+                    detectedConfiguration,
                     style: TextStyle(color: Color(0xff67c980)),
                   ),
                 ),
@@ -298,7 +781,7 @@ class _FlashPageState extends State<FlashPage> {
                 Expanded(
                   child: _Toggle(
                     'Autoload',
-                    'Riprogramma alla modifica dei file',
+                    'Reflash when files change',
                     autoload,
                     (v) => setState(() => autoload = v),
                   ),
@@ -306,8 +789,8 @@ class _FlashPageState extends State<FlashPage> {
                 const SizedBox(width: 24),
                 Expanded(
                   child: _Toggle(
-                    'Monitor dopo il flash',
-                    'Riapre la seriale automaticamente',
+                    'Monitor after flashing',
+                    'Automatically reopen the serial port',
                     monitorAfter,
                     (v) => setState(() => monitorAfter = v),
                   ),
@@ -325,10 +808,10 @@ class _FlashPageState extends State<FlashPage> {
                       const SizedBox(height: 6),
                       Text(
                         busy
-                            ? 'Scrittura in corso · ${(progress * 100).round()}%'
+                            ? 'Writing · ${(progress * 100).round()}%'
                             : progress >= 1
-                            ? 'Programmazione completata · verifica OK'
-                            : '${targets.length} segmenti pronti · $port',
+                            ? 'Programming completed · verification OK'
+                            : '${targets.length} segments ready · $port',
                       ),
                     ],
                   ),
@@ -336,7 +819,7 @@ class _FlashPageState extends State<FlashPage> {
                 const SizedBox(width: 18),
                 Button(
                   onPressed: busy ? null : () {},
-                  child: const Text('Cancella flash'),
+                  child: const Text('Erase flash'),
                 ),
                 const SizedBox(width: 8),
                 Button(
@@ -346,13 +829,13 @@ class _FlashPageState extends State<FlashPage> {
                           setState(() => busy = false);
                         }
                       : null,
-                  child: const Text('Interrompi'),
+                  child: const Text('Stop'),
                 ),
                 const SizedBox(width: 8),
                 FilledButton(
                   key: const Key('start-flash-button'),
-                  onPressed: busy ? null : start,
-                  child: const Text('Programma'),
+                  onPressed: busy || compatibilityFailed ? null : start,
+                  child: const Text('Program'),
                 ),
               ],
             ),
@@ -390,7 +873,7 @@ class _MonitorPageState extends State<MonitorPage> {
 
   @override
   Widget build(BuildContext context) => ScaffoldPage(
-    header: const PageHeader(title: Text('Monitor seriale')),
+    header: const PageHeader(title: Text('Serial monitor')),
     content: Padding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
       child: Column(
@@ -403,7 +886,7 @@ class _MonitorPageState extends State<MonitorPage> {
                   runSpacing: 10,
                   crossAxisAlignment: WrapCrossAlignment.end,
                   children: [
-                    _Combo('Porta', 235, 'COM7 · USB JTAG/serial', const [
+                    _Combo('Port', 235, 'COM7 · USB JTAG/serial', const [
                       'COM7 · USB JTAG/serial',
                       'COM12 · CP210x UART',
                       '/dev/ttyUSB0',
@@ -420,10 +903,10 @@ class _MonitorPageState extends State<MonitorPage> {
                       '1.5',
                       '2',
                     ], (_) {}),
-                    _Combo('Parità', 110, 'Nessuna', const [
-                      'Nessuna',
-                      'Pari',
-                      'Dispari',
+                    _Combo('Parity', 110, 'None', const [
+                      'None',
+                      'Even',
+                      'Odd',
                     ], (_) {}),
                     Button(
                       onPressed: () {},
@@ -432,7 +915,7 @@ class _MonitorPageState extends State<MonitorPage> {
                     FilledButton(
                       key: const Key('monitor-connect-button'),
                       onPressed: () => setState(() => connected = !connected),
-                      child: Text(connected ? 'Disconnetti' : 'Connetti'),
+                      child: Text(connected ? 'Disconnect' : 'Connect'),
                     ),
                     Button(
                       onPressed: connected ? () {} : null,
@@ -454,9 +937,9 @@ class _MonitorPageState extends State<MonitorPage> {
                       ),
                     ),
                     const SizedBox(width: 7),
-                    Text(connected ? 'Connesso · 115200 8N1' : 'Non connesso'),
+                    Text(connected ? 'Connected · 115200 8N1' : 'Disconnected'),
                     const Spacer(),
-                    const Text('Buffer 7 / 10.000 righe'),
+                    const Text('Buffer 7 / 10,000 lines'),
                   ],
                 ),
               ],
@@ -468,18 +951,18 @@ class _MonitorPageState extends State<MonitorPage> {
               ToggleButton(
                 checked: paused,
                 onChanged: (v) => setState(() => paused = v),
-                child: Text(paused ? 'Riprendi' : 'Pausa'),
+                child: Text(paused ? 'Resume' : 'Pause'),
               ),
               const SizedBox(width: 7),
               Button(
                 onPressed: () => setState(lines.clear),
-                child: const Text('Pulisci'),
+                child: const Text('Clear'),
               ),
               const SizedBox(width: 7),
               ToggleButton(
                 checked: wrap,
                 onChanged: (v) => setState(() => wrap = v),
-                child: const Text('A capo'),
+                child: const Text('Wrap'),
               ),
               const SizedBox(width: 7),
               ToggleButton(
@@ -488,9 +971,9 @@ class _MonitorPageState extends State<MonitorPage> {
                 child: const Text('Timestamp'),
               ),
               const Spacer(),
-              Button(onPressed: () {}, child: const Text('Salva')),
+              Button(onPressed: () {}, child: const Text('Save')),
               const SizedBox(width: 7),
-              Button(onPressed: () {}, child: const Text('Copia visibile')),
+              Button(onPressed: () {}, child: const Text('Copy visible')),
             ],
           ),
           const SizedBox(height: 9),
@@ -498,7 +981,7 @@ class _MonitorPageState extends State<MonitorPage> {
             children: [
               Expanded(
                 child: TextBox(
-                  placeholder: 'Cerca nel log visibile…',
+                  placeholder: 'Search visible log…',
                   prefix: Padding(
                     padding: EdgeInsets.only(left: 8),
                     child: Icon(FluentIcons.search, size: 14),
@@ -508,12 +991,12 @@ class _MonitorPageState extends State<MonitorPage> {
               SizedBox(width: 9),
               SizedBox(
                 width: 230,
-                child: TextBox(placeholder: 'Includi: wifi, sensor…'),
+                child: TextBox(placeholder: 'Include: wifi, sensor…'),
               ),
               SizedBox(width: 9),
               SizedBox(
                 width: 230,
-                child: TextBox(placeholder: 'Escludi: debug…'),
+                child: TextBox(placeholder: 'Exclude: debug…'),
               ),
             ],
           ),
@@ -554,20 +1037,20 @@ class _MonitorPageState extends State<MonitorPage> {
                 child: TextBox(
                   controller: send,
                   enabled: connected,
-                  placeholder: 'Invia alla seriale…',
+                  placeholder: 'Send to serial port…',
                   onSubmitted: (_) => transmit(),
                 ),
               ),
               const SizedBox(width: 8),
               _Combo('', 110, 'CR + LF', const [
-                'Nessuno',
+                'None',
                 'LF',
                 'CR + LF',
               ], (_) {}),
               const SizedBox(width: 8),
               FilledButton(
                 onPressed: connected ? transmit : null,
-                child: const Text('Invia'),
+                child: const Text('Send'),
               ),
             ],
           ),
@@ -595,8 +1078,8 @@ class _PlotPageState extends State<PlotPage> {
     header: const PageHeader(title: Text('Plot')),
     children: [
       const _Intro(
-        'Dati seriali in tempo reale',
-        'Anteprima dei valori numerici estratti dalle righe ricevute.',
+        'Real-time serial data',
+        'Preview of numeric values extracted from received lines.',
       ),
       const SizedBox(height: 16),
       _Card(
@@ -606,21 +1089,21 @@ class _PlotPageState extends State<PlotPage> {
               checked: a,
               onChanged: (v) => setState(() => a = v ?? false),
             ),
-            const Text('Temperatura'),
+            const Text('Temperature'),
             const SizedBox(width: 20),
             Checkbox(
               checked: b,
               onChanged: (v) => setState(() => b = v ?? false),
             ),
-            const Text('Pressione'),
+            const Text('Pressure'),
             const Spacer(),
             ToggleButton(
               checked: paused,
               onChanged: (v) => setState(() => paused = v),
-              child: Text(paused ? 'Riprendi' : 'Pausa'),
+              child: Text(paused ? 'Resume' : 'Pause'),
             ),
             const SizedBox(width: 8),
-            Button(onPressed: () {}, child: const Text('Pulisci')),
+            Button(onPressed: () {}, child: const Text('Clear')),
           ],
         ),
       ),
@@ -636,14 +1119,12 @@ class _PlotPageState extends State<PlotPage> {
       const Row(
         children: [
           Expanded(
-            child: _Metric('Temperatura', '23,72 °C', Color(0xff59a8ff)),
+            child: _Metric('Temperature', '23.72 °C', Color(0xff59a8ff)),
           ),
           SizedBox(width: 12),
-          Expanded(
-            child: _Metric('Pressione', '1008,4 hPa', Color(0xffffb44c)),
-          ),
+          Expanded(child: _Metric('Pressure', '1008.4 hPa', Color(0xffffb44c))),
           SizedBox(width: 12),
-          Expanded(child: _Metric('Campioni', '1.248', Color(0xff6fd58a))),
+          Expanded(child: _Metric('Samples', '1,248', Color(0xff6fd58a))),
         ],
       ),
     ],
@@ -656,22 +1137,22 @@ class SettingsPage extends StatelessWidget {
   final ValueChanged<ThemeMode> onMode;
   @override
   Widget build(BuildContext context) => ScaffoldPage.scrollable(
-    header: const PageHeader(title: Text('Impostazioni')),
+    header: const PageHeader(title: Text('Settings')),
     children: [
       _Card(
-        title: 'Aspetto',
+        title: 'Appearance',
         child: Row(
           children: [
-            const Expanded(child: Text('Tema dell’applicazione')),
+            const Expanded(child: Text('Application theme')),
             SizedBox(
               width: 160,
               child: ComboBox<ThemeMode>(
                 value: mode,
                 isExpanded: true,
                 items: const [
-                  ComboBoxItem(value: ThemeMode.system, child: Text('Sistema')),
-                  ComboBoxItem(value: ThemeMode.light, child: Text('Chiaro')),
-                  ComboBoxItem(value: ThemeMode.dark, child: Text('Scuro')),
+                  ComboBoxItem(value: ThemeMode.system, child: Text('System')),
+                  ComboBoxItem(value: ThemeMode.light, child: Text('Light')),
+                  ComboBoxItem(value: ThemeMode.dark, child: Text('Dark')),
                 ],
                 onChanged: (v) {
                   if (v != null) onMode(v);
@@ -683,19 +1164,19 @@ class SettingsPage extends StatelessWidget {
       ),
       const SizedBox(height: 14),
       _Card(
-        title: 'Strumenti Espressif',
+        title: 'Espressif tools',
         child: Column(
           children: [
             InfoLabel(
-              label: 'Percorso esptool',
+              label: 'esptool path',
               child: TextBox(
-                placeholder: 'Rilevamento automatico nella cartella dell’app',
+                placeholder: 'Automatically detect in the application folder',
               ),
             ),
             SizedBox(height: 12),
             InfoBar(
-              title: Text('Modalità demo'),
-              content: Text('Nessun comando esterno viene eseguito.'),
+              title: Text('Demo mode'),
+              content: Text('No external write command is executed.'),
               severity: InfoBarSeverity.info,
             ),
           ],
@@ -703,22 +1184,22 @@ class SettingsPage extends StatelessWidget {
       ),
       const SizedBox(height: 14),
       const _Card(
-        title: 'Comportamento',
+        title: 'Behavior',
         child: Column(
           children: [
             _Setting(
-              'Ricorda l’ultima porta',
-              'Ripristina porta e baud rate all’avvio',
+              'Remember last port',
+              'Restore port and baud rate at startup',
             ),
             SizedBox(height: 14),
             _Setting(
-              'Riapri il monitor dopo il flash',
-              'Attende 600 ms prima della connessione',
+              'Reopen monitor after flashing',
+              'Wait 600 ms before connecting',
             ),
             SizedBox(height: 14),
             _Setting(
-              'Conferma cancellazione flash',
-              'Richiede conferma prima di erase-flash',
+              'Confirm flash erase',
+              'Ask for confirmation before erase-flash',
             ),
           ],
         ),
@@ -792,6 +1273,48 @@ class _Combo extends StatelessWidget {
   );
 }
 
+class _SerialCombo extends StatelessWidget {
+  const _SerialCombo({
+    required this.width,
+    required this.value,
+    required this.ports,
+    required this.scanning,
+    required this.onChanged,
+  });
+
+  final double width;
+  final String value;
+  final List<SerialPortInfo> ports;
+  final bool scanning;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: width,
+    child: InfoLabel(
+      label: 'Serial port',
+      child: ComboBox<String>(
+        value: ports.any((item) => item.port == value) ? value : null,
+        placeholder: Text(scanning ? 'Scanning…' : 'No ports found'),
+        isExpanded: true,
+        items: ports
+            .map(
+              (item) => ComboBoxItem(
+                value: item.port,
+                child: Text(item.displayName, overflow: TextOverflow.ellipsis),
+              ),
+            )
+            .toList(),
+        onChanged: scanning
+            ? null
+            : (selected) {
+                if (selected != null) onChanged(selected);
+              },
+      ),
+    ),
+  );
+}
+
 class _Intro extends StatelessWidget {
   const _Intro(this.title, this.body);
   final String title, body;
@@ -855,25 +1378,6 @@ class _SettingState extends State<_Setting> {
       ),
       ToggleSwitch(checked: value, onChanged: (v) => setState(() => value = v)),
     ],
-  );
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge();
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-    decoration: BoxDecoration(
-      color: const Color(0xff225b35),
-      borderRadius: BorderRadius.circular(20),
-    ),
-    child: const Row(
-      children: [
-        Icon(FluentIcons.plug_connected, size: 12, color: Color(0xff8be3a1)),
-        SizedBox(width: 6),
-        Text('COM7', style: TextStyle(fontSize: 12, color: Color(0xffd7f5df))),
-      ],
-    ),
   );
 }
 

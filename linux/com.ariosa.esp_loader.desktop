@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ESP Loader
+Comment=Program and monitor Espressif devices
+Exec=esp_loader
+Icon=com.ariosa.esp_loader
+Terminal=false
+Categories=Development;Electronics;
+StartupNotify=true
+StartupWMClass=com.ariosa.esp_loader

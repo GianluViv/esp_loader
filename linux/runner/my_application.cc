@@ -26,7 +26,21 @@ static void my_application_activate(GApplication* application) {
   // GTK client-side GtkHeaderBar: on KDE/Breeze this renders a slim title
   // bar, whereas a GtkHeaderBar can end up noticeably taller depending on
   // the GTK theme and session type (X11 vs Wayland).
-  gtk_window_set_title(window, "esp_loader");
+  gtk_window_set_title(window, "ESP Loader");
+
+  // Set the window icon for X11 and for Wayland desktops that honor the GTK
+  // hint. On Wayland, APPLICATION_ID must also match the installed .desktop
+  // file name.
+  g_autofree gchar* executable = g_file_read_link("/proc/self/exe", nullptr);
+  if (executable != nullptr) {
+    g_autofree gchar* executable_dir = g_path_get_dirname(executable);
+    g_autofree gchar* icon_path =
+        g_build_filename(executable_dir, "data", "esp_loader.png", nullptr);
+    g_autoptr(GError) icon_error = nullptr;
+    if (!gtk_window_set_icon_from_file(window, icon_path, &icon_error)) {
+      g_warning("Failed to load application icon: %s", icon_error->message);
+    }
+  }
 
   gtk_window_set_default_size(window, 1280, 720);
 
