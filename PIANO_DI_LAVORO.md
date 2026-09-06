@@ -37,7 +37,7 @@ tool bundling, Fluent UI, and desktop-window handling.
 - Make long operations cancellable and expose status and progress.
 - Keep user-facing strings ready for future localization and language selection.
 
-## 4. Current status — September 2, 2026
+## 4. Current status — September 6, 2026
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -46,17 +46,23 @@ tool bundling, Fluent UI, and desktop-window handling.
 | Firmware-folder import | **complete** | Selecting `bootloader.bin` imports all sibling `.bin` files |
 | ESP-IDF build import | **complete** | Imports paths, offsets, target, and settings from `flasher_args.json` |
 | Partition table | **complete** | Parses `partitions.bin` and populates matching offsets |
-| Serial-port enumeration | **partial** | Real on the Programming page for Windows and Linux; Monitor is simulated |
+| Serial-port enumeration | **implemented** | Real on Programming and Monitor for Windows and Linux |
 | Device test | **complete** | Non-destructive chip and flash-size detection through `esptool flash-id` |
 | Firmware/device compatibility | **complete** | Compares manifest target with detected hardware and blocks mismatches |
-| Flash parameters | **partial** | Updated by Test and editable, but not yet used for real flashing |
-| Programming and erasing | **simulated** | No write or erase command is executed yet |
-| Serial monitor | **simulated** | UI exists; serial communication is not connected |
-| Autoload | **simulated** | UI exists; file watching is not implemented |
+| Flash parameters | **implemented** | Applied to real programming with validation |
+| Programming | **verified** | Real esptool 4/5 writes, validation, preview, per-image progress, Stop and timeout; physical tests passed |
+| Full-chip erasing | **verified** | Confirmation, esptool 4/5 commands, log, Stop and timeout; physical tests passed |
+| Serial monitor | **partial** | Real connection, UTF-8 reception, bounded buffer, pause, filters, transmit, reset, copy/save, and flash coordination; USB auto-reconnection pending |
+| Autoload | **implemented** | Stable changes to selected binaries trigger programming; changes during a flash are queued |
+| Local image profile | **implemented** | Paths, offsets, and enabled states persist beside each executable/AppImage copy |
+| Project import | **implemented** | Project-root detection for PlatformIO, ESP-IDF, Arduino exported builds, and generic `flasher_args.json` builds |
+| Production export | **implemented** | Portable ZIP with versioned manifest, flash settings, binary sizes, and SHA-256 integrity checks |
+| Direct production ZIP import | **implemented** | Opens, safely extracts, and verifies an ESP Loader production ZIP |
+| `collaudo_ariosa_global` integration | **implemented** | Imports ZIP/folders, checks SHA-256 and chip/model, and persists every flash segment |
 | Plot | **simulated** | UI and data are demonstrative |
 | Native icons | **complete** | Windows resources and Linux GTK/desktop integration |
 | Distribution | **partial** | Linux bundle verified; AppImage generation remains to be implemented |
-| Automated tests | **partial** | Partition parser, esptool output, Windows port parsing, and core widgets |
+| Automated tests | **partial** | Parsers, flash validation, command construction, process lifecycle, and programming widgets; hardware/Windows runtime checks pending |
 
 Partition offsets come from `partitions.bin`. Bootloader, partition-table, and
 `boot_app0.bin` offsets are editable suggestions based on the ESP family and
@@ -134,7 +140,6 @@ programming, erasing, completed, error, and cancellation states.
 - configure line settings fully;
 - open and close robustly;
 - receive without blocking the UI;
-- support configurable text and hexadecimal display;
 - transmit with a configurable terminator;
 - control DTR/RTS and reset when supported;
 - provide pause, bounded buffers, timestamps, search, filters, copy, and save;
@@ -180,7 +185,7 @@ support profile import/export.
 
 ### Phase 12 — Distribution
 
-- Windows bundle and optional portable executable;
+- Windows bundle packaged as a portable executable with Enigma Virtual Box;
 - Linux AppImage;
 - platform-specific Espressif utilities and licenses;
 - startup dependency checks;
@@ -200,17 +205,57 @@ support profile import/export.
 | M7 | Agreed plotting and advanced features |
 | M8 | Tested, distributable release |
 
-## 7. Next operational step
+### Future projects
 
-Connect **Program** to a real `esptool` service while keeping process logic out
-of the widgets. Before writing, the service must:
+- Optional hexadecimal display and transmission mode for the serial monitor.
 
-1. validate the port, files, addresses, sizes, and overlaps;
-2. build and expose the `write-flash` command for inspection;
-3. capture output, errors, and progress in real time;
-4. support controlled process interruption;
-5. report a clear result and preserve the complete technical log.
+## 7. Programming implementation — September 6, 2026
 
-Real flash erasing will only be connected after this validation path. Serial
-monitoring, flash coordination, and autoload follow. The final Linux release
-will be generated as an AppImage.
+`lib/flash_service.dart` owns request validation, version-aware esptool discovery,
+command construction, stdout/stderr streaming, per-image progress, cancellation,
+and a ten-minute operation timeout. Termination escalates after two seconds.
+Failed writes are not retried automatically. Program uses only enabled image rows;
+Preview command validates without launching a device operation. Parameters and
+file editing are locked while operations run. The technical panel retains the
+session output. Autoload and monitor reopening are enabled. Full-chip erase uses the same
+validated connection and exclusive process lifecycle, with mandatory confirmation
+and indeterminate activity. No binary files or force option are used.
+
+Validation covers the port, baud, selected/manifest chip compatibility, readable
+nonempty files, address ranges, selected flash capacity, and overlapping erase
+sectors. With Detect/Keep, physical capacity checks remain with esptool. The
+explicit chip argument also preserves esptool's own hardware compatibility checks.
+
+Automated checks cover validation, esptool 4/5 arguments, split progress output,
+failed exits without retries, fallback discovery, timeout, cancellation (including
+late process creation), exclusive operations, and UI completion/Stop/disposal.
+Linux child-process tests cover stream draining and forced termination.
+
+## 8. Next operational step
+
+Programming and full-chip erase passed physical-device testing on September 6,
+2026. Repeat the runtime checks on Windows before considering milestone M3
+complete.
+
+The first serial-monitor increment uses GS240A as the reference stream at 115200
+8N1. It provides real Windows/Linux access, split-packet UTF-8 line decoding, a
+10,000-line buffer, pause/resume, timestamps, search and exclude filters,
+transmit terminators, DTR/RTS reset, copy, save, and disconnection reporting.
+It learns a master prefix list from `TAG: ...` and ESP-IDF `ESP_LOGx` lines.
+Each selected prefix creates a stable tab backed by its own exact-tag queue,
+while the All tab retains the complete log.
+
+Next, test the monitor, flash coordination, and autoload against GS240A hardware
+on Linux and Windows, including USB removal during reception. Then add automatic
+USB reconnection. The final Linux release will be generated as an AppImage.
+
+## 9. Production integration notes
+
+- `collaudo_ariosa_global` now accepts the production artifacts exported by ESP
+  Loader. The shared input contract is `production_manifest.json` plus the
+  referenced binaries, addresses, flash settings, sizes, and SHA-256 hashes.
+- Direct `.zip` import is implemented in ESP Loader: it validates archive paths,
+  extracts into an application-managed temporary directory, and uses the same
+  manifest and SHA-256 verification as manually extracted folders.
+- Package the Windows release with Enigma Virtual Box, including the Flutter
+  runtime, application DLLs, assets, plugins, and required Espressif utilities.
