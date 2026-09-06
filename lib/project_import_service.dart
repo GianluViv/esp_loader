@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'firmware_bundle_service.dart';
@@ -133,12 +134,66 @@ class ProjectImportService {
       multiLine: true,
     ).firstMatch(block)?.group(1);
     final chip = _chipFromText('$board $block');
+    final bundle = await _platformIoBundle(build, chip: chip);
     return ProjectImportResult(
       type: EspProjectType.platformIo,
       projectPath: project.path,
       buildPath: build.path,
       environment: environment,
-      bundle: _bundleFromBins(build, chip: chip),
+      bundle: bundle,
+    );
+  }
+
+  static Future<FirmwareBundle> _platformIoBundle(
+    Directory build, {
+    String? chip,
+  }) async {
+    final metadata = File(_join(build.path, 'idedata.json'));
+    if (await metadata.exists()) {
+      final decoded = jsonDecode(await metadata.readAsString());
+      final extra = decoded is Map<String, dynamic> ? decoded['extra'] : null;
+      final flashImages = extra is Map ? extra['flash_images'] : null;
+      final applicationOffset = extra is Map
+          ? extra['application_offset']?.toString()
+          : null;
+      if (flashImages is List && applicationOffset != null) {
+        final images = <FirmwareImage>[];
+        for (final raw in flashImages.whereType<Map>()) {
+          final address = raw['offset']?.toString();
+          final path = raw['path']?.toString();
+          if (address != null && path != null && File(path).existsSync()) {
+            images.add(FirmwareImage(address: address, path: path));
+          }
+        }
+        final application = File(_join(build.path, 'firmware.bin'));
+        if (await application.exists()) {
+          images.add(
+            FirmwareImage(address: applicationOffset, path: application.path),
+          );
+        }
+        images.sort((a, b) => _offset(a.address).compareTo(_offset(b.address)));
+        if (images.isNotEmpty) {
+          final effectiveChip = chip ?? 'ESP32';
+          return FirmwareBundle(
+            manifestPath: metadata.path,
+            images: images,
+            chip: effectiveChip,
+            flashMode: 'dio',
+            flashFrequency: effectiveChip == 'ESP32' ? '40 MHz' : '80 MHz',
+            flashSize: effectiveChip == 'ESP32' ? '4 MB' : '16 MB',
+          );
+        }
+      }
+    }
+    final effectiveChip = chip ?? 'ESP32';
+    final fallback = _bundleFromBins(build, chip: effectiveChip);
+    return FirmwareBundle(
+      manifestPath: fallback.manifestPath,
+      images: fallback.images,
+      chip: fallback.chip,
+      flashMode: 'dio',
+      flashFrequency: effectiveChip == 'ESP32' ? '40 MHz' : '80 MHz',
+      flashSize: effectiveChip == 'ESP32' ? '4 MB' : '16 MB',
     );
   }
 
@@ -243,6 +298,9 @@ class ProjectImportService {
 
   static DateTime _modified(FileSystemEntity entity) =>
       entity.statSync().modified;
+  static int _offset(String value) =>
+      int.tryParse(value.trim().replaceFirst(RegExp(r'^0x'), ''), radix: 16) ??
+      0;
   static String _join(String base, String child) =>
       '$base${Platform.pathSeparator}${child.replaceAll('/', Platform.pathSeparator)}';
 }

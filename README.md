@@ -108,8 +108,10 @@ AppImage, the profile is stored beside the original `.AppImage` file.
 **Select project folder** accepts a project root and detects PlatformIO through
 `platformio.ini`, ESP-IDF through `CMakeLists.txt` and `build/flasher_args.json`,
 and Arduino through its `.ino` sketch and exported build binaries. PlatformIO
-uses the most recently compiled environment when more than one build is present.
-The detected build directory, chip, images, and offsets populate the flash table.
+uses the most recently compiled environment when more than one build is present
+and reads `idedata.json` to reproduce its complete upload layout, including
+framework images such as `boot_app0.bin`. The detected build directory, chip,
+images, offsets, frequency, and flash size populate the flash table.
 The selected project is stored in the portable profile. With Autoload enabled,
 the project metadata is parsed again before every automatic programming cycle.
 

@@ -11,6 +11,7 @@ import 'firmware_bundle_service.dart';
 import 'flash_service.dart';
 import 'local_profile_service.dart';
 import 'partition_table.dart';
+import 'plot_data_parser.dart';
 import 'project_import_service.dart';
 import 'production_package_service.dart';
 import 'serial_port_service.dart';
@@ -57,6 +58,7 @@ class _AppShellState extends State<AppShell> {
   final technicalLog = ValueNotifier<String>('No operations yet.');
   final monitorKey = GlobalKey<_MonitorPageState>();
   final profileStore = LocalFlashProfileStore();
+  final plotLines = StreamController<String>.broadcast();
 
   void appendLog(String text) {
     technicalLog.value = technicalLog.value == 'No operations yet.'
@@ -67,6 +69,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     technicalLog.dispose();
+    plotLines.close();
     super.dispose();
   }
 
@@ -84,8 +87,8 @@ class _AppShellState extends State<AppShell> {
         },
         profileStore: profileStore,
       ),
-      MonitorPage(key: monitorKey),
-      const PlotPage(),
+      MonitorPage(key: monitorKey, onLine: plotLines.add),
+      PlotPage(lines: plotLines.stream),
       SettingsPage(mode: widget.mode, onMode: widget.onMode),
     ];
     return NavigationView(
@@ -284,12 +287,14 @@ class _FlashPageState extends State<FlashPage> {
 
   Future<void> _testConnection() async {
     if (port.isEmpty || testingConnection) return;
+    var resumeMonitor = false;
     connectionMessageTimer?.cancel();
     setState(() {
       testingConnection = true;
       connectionMessage = null;
     });
     try {
+      resumeMonitor = await widget.beforeFlash?.call() ?? false;
       final result = await (widget.testDevice ?? EspToolService.testConnection)(
         port: port,
         baud: baud,
@@ -299,10 +304,10 @@ class _FlashPageState extends State<FlashPage> {
       setState(() {
         chip = result.chip;
         detectedChip = result.chip;
-        if (!firmwareConfigured) {
-          spiMode = 'DIO';
-          flashFrequency = _recommendedFlashFrequency(result.chip);
-          if (result.flashSize != null) flashSize = result.flashSize!;
+        spiMode = 'DIO';
+        flashFrequency = _recommendedFlashFrequency(result.chip);
+        flashSize = result.flashSize ?? 'Detect';
+        if (projectPath == null && !firmwareConfigured) {
           for (final target in targets.where(
             (item) => _isBootloader(item.path),
           )) {
@@ -312,7 +317,6 @@ class _FlashPageState extends State<FlashPage> {
         detectedConfiguration = result.flashSize == null
             ? '${result.chip} · flash size not detected'
             : '${result.chip} · ${result.flashSize}';
-        testingConnection = false;
         connectionTestFailed = false;
         connectionMessage = '${result.chip} successfully detected on $port.';
         _updateCompatibility();
@@ -324,11 +328,15 @@ class _FlashPageState extends State<FlashPage> {
     } on Object catch (error) {
       if (!mounted) return;
       setState(() {
-        testingConnection = false;
         _clearDetection();
         connectionTestFailed = true;
         connectionMessage = _connectionError(error);
       });
+    } finally {
+      if (monitorAfterFlashing) {
+        await widget.afterFlash?.call(resumeMonitor);
+      }
+      if (mounted) setState(() => testingConnection = false);
     }
   }
 
@@ -850,7 +858,7 @@ class _FlashPageState extends State<FlashPage> {
     }
     final build = projectBuildPath;
     if (build != null) {
-      for (final name in ['flasher_args.json', 'flash_args']) {
+      for (final name in ['flasher_args.json', 'flash_args', 'idedata.json']) {
         final path = '$build${Platform.pathSeparator}$name';
         try {
           final stat = File(path).statSync();
@@ -1068,6 +1076,80 @@ class _FlashPageState extends State<FlashPage> {
     }
   }
 
+  Widget _flashConfigurationCard() => _InputLock(
+    locked: locked,
+    child: _Card(
+      title: 'Flash configuration',
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 12,
+        children: [
+          _Combo(
+            'SPI mode',
+            135,
+            spiMode,
+            const ['Keep', 'QIO', 'QOUT', 'DIO', 'DOUT'],
+            (value) => setState(() {
+              firmwareConfigured = true;
+              spiMode = value;
+            }),
+          ),
+          _Combo(
+            'Frequency',
+            135,
+            flashFrequency,
+            const ['Keep', '20 MHz', '40 MHz', '80 MHz'],
+            (value) => setState(() {
+              firmwareConfigured = true;
+              flashFrequency = value;
+            }),
+          ),
+          _Combo(
+            'Size',
+            135,
+            flashSize,
+            [
+              'Detect',
+              '1 MB',
+              '2 MB',
+              '4 MB',
+              '8 MB',
+              '16 MB',
+              '32 MB',
+              if (!const {
+                'Detect',
+                '1 MB',
+                '2 MB',
+                '4 MB',
+                '8 MB',
+                '16 MB',
+                '32 MB',
+              }.contains(flashSize))
+                flashSize,
+            ],
+            (value) => setState(() {
+              firmwareConfigured = true;
+              flashSize = value;
+            }),
+          ),
+          SizedBox(
+            width: 190,
+            child: InfoLabel(
+              label: 'Detection',
+              child: Padding(
+                padding: const EdgeInsets.only(top: 7),
+                child: Text(
+                  detectedConfiguration,
+                  style: const TextStyle(color: Color(0xff67c980)),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) => ScaffoldPage.scrollable(
     header: const PageHeader(title: Text('Programming')),
@@ -1126,6 +1208,7 @@ class _FlashPageState extends State<FlashPage> {
                 '1500000',
               ], (v) => setState(() => baud = v)),
               Button(
+                key: const Key('test-device-button'),
                 onPressed: locked || scanningPorts || port.isEmpty
                     ? null
                     : _testConnection,
@@ -1141,7 +1224,7 @@ class _FlashPageState extends State<FlashPage> {
                     else
                       const Icon(FluentIcons.plug_connected, size: 14),
                     const SizedBox(width: 6),
-                    const Text('Test'),
+                    const Text('Test and configure device'),
                   ],
                 ),
               ),
@@ -1220,6 +1303,8 @@ class _FlashPageState extends State<FlashPage> {
         ),
       ],
       const SizedBox(height: 14),
+      _flashConfigurationCard(),
+      const SizedBox(height: 14),
       _Card(
         title: 'Flash images',
         trailing: Wrap(
@@ -1254,9 +1339,11 @@ class _FlashPageState extends State<FlashPage> {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   '${projectType ?? 'Saved project'}'
-                  '${projectEnvironment == null ? '' : ' · $projectEnvironment'}\n'
-                  '$projectPath'
-                  '${projectBuildPath == null ? '' : '\nBuild: $projectBuildPath'}',
+                  '${projectEnvironment == null ? '' : ' · $projectEnvironment'}'
+                  ' · Project: $projectPath'
+                  '${projectBuildPath == null ? '' : ' · Build: $projectBuildPath'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     color: Color(0xffaab3bc),
                     fontSize: 12,
@@ -1351,80 +1438,6 @@ class _FlashPageState extends State<FlashPage> {
         ),
       ),
       const SizedBox(height: 14),
-      _InputLock(
-        locked: locked,
-        child: _Card(
-          title: 'Flash configuration',
-          child: Wrap(
-            spacing: 14,
-            runSpacing: 12,
-            children: [
-              _Combo(
-                'SPI mode',
-                135,
-                spiMode,
-                const ['Keep', 'QIO', 'QOUT', 'DIO', 'DOUT'],
-                (value) => setState(() {
-                  firmwareConfigured = true;
-                  spiMode = value;
-                }),
-              ),
-              _Combo(
-                'Frequency',
-                135,
-                flashFrequency,
-                const ['Keep', '20 MHz', '40 MHz', '80 MHz'],
-                (value) => setState(() {
-                  firmwareConfigured = true;
-                  flashFrequency = value;
-                }),
-              ),
-              _Combo(
-                'Size',
-                135,
-                flashSize,
-                [
-                  'Detect',
-                  '1 MB',
-                  '2 MB',
-                  '4 MB',
-                  '8 MB',
-                  '16 MB',
-                  '32 MB',
-                  if (!const {
-                    'Detect',
-                    '1 MB',
-                    '2 MB',
-                    '4 MB',
-                    '8 MB',
-                    '16 MB',
-                    '32 MB',
-                  }.contains(flashSize))
-                    flashSize,
-                ],
-                (value) => setState(() {
-                  firmwareConfigured = true;
-                  flashSize = value;
-                }),
-              ),
-              SizedBox(
-                width: 190,
-                child: InfoLabel(
-                  label: 'Detection',
-                  child: Padding(
-                    padding: EdgeInsets.only(top: 7),
-                    child: Text(
-                      detectedConfiguration,
-                      style: TextStyle(color: Color(0xff67c980)),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-      const SizedBox(height: 14),
       _Card(
         child: Column(
           children: [
@@ -1513,10 +1526,11 @@ class _FlashPageState extends State<FlashPage> {
 }
 
 class MonitorPage extends StatefulWidget {
-  const MonitorPage({super.key, this.monitor, this.discoverPorts});
+  const MonitorPage({super.key, this.monitor, this.discoverPorts, this.onLine});
 
   final SerialMonitorService? monitor;
   final Future<List<SerialPortInfo>> Function()? discoverPorts;
+  final ValueChanged<String>? onLine;
 
   @override
   State<MonitorPage> createState() => _MonitorPageState();
@@ -1668,6 +1682,7 @@ class _MonitorPageState extends State<MonitorPage> {
   }
 
   void _receive(String value) {
+    widget.onLine?.call(value);
     final prefix = detectSerialLogPrefix(value);
     final entry = _MonitorLine(DateTime.now(), value, prefix);
     lines.add(entry);
@@ -2150,13 +2165,83 @@ class _MonitorLine {
 }
 
 class PlotPage extends StatefulWidget {
-  const PlotPage({super.key});
+  const PlotPage({super.key, required this.lines});
+  final Stream<String> lines;
   @override
   State<PlotPage> createState() => _PlotPageState();
 }
 
 class _PlotPageState extends State<PlotPage> {
-  bool a = true, b = true, paused = false;
+  static const maxSamplesPerSeries = 600;
+  static const colors = [
+    Color(0xff59a8ff),
+    Color(0xffffb44c),
+    Color(0xff6fd58a),
+    Color(0xffc58cff),
+    Color(0xffff718b),
+    Color(0xff55d6c2),
+  ];
+
+  StreamSubscription<String>? subscription;
+  final series = <String, _PlotSeries>{};
+  final selected = <String>{};
+  bool paused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    subscription = widget.lines.listen(_receive);
+  }
+
+  @override
+  void didUpdateWidget(covariant PlotPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.lines == widget.lines) return;
+    subscription?.cancel();
+    subscription = widget.lines.listen(_receive);
+  }
+
+  @override
+  void dispose() {
+    subscription?.cancel();
+    super.dispose();
+  }
+
+  void _receive(String line) {
+    if (paused) return;
+    final measurements = parsePlotMeasurements(line);
+    if (measurements.isEmpty) return;
+    final now = DateTime.now();
+    for (final measurement in measurements) {
+      final item = series.putIfAbsent(
+        measurement.name,
+        () => _PlotSeries(
+          measurement.name,
+          measurement.unit,
+          colors[series.length % colors.length],
+        ),
+      );
+      item.unit = measurement.unit.isEmpty ? item.unit : measurement.unit;
+      item.samples.add(_PlotSample(now, measurement.value));
+      if (item.samples.length > maxSamplesPerSeries) {
+        item.samples.removeRange(0, item.samples.length - maxSamplesPerSeries);
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _clear() {
+    setState(() {
+      for (final item in series.values) {
+        item.samples.clear();
+      }
+    });
+  }
+
+  List<_PlotSeries> get selectedSeries => series.values
+      .where((item) => selected.contains(item.name))
+      .toList(growable: false);
+
   @override
   Widget build(BuildContext context) => ScaffoldPage.scrollable(
     header: const PageHeader(title: Text('Plot')),
@@ -2167,52 +2252,107 @@ class _PlotPageState extends State<PlotPage> {
       ),
       const SizedBox(height: 16),
       _Card(
-        child: Row(
+        title: 'Detected values',
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Checkbox(
-              checked: a,
-              onChanged: (v) => setState(() => a = v ?? false),
-            ),
-            const Text('Temperature'),
-            const SizedBox(width: 20),
-            Checkbox(
-              checked: b,
-              onChanged: (v) => setState(() => b = v ?? false),
-            ),
-            const Text('Pressure'),
-            const Spacer(),
             ToggleButton(
               checked: paused,
-              onChanged: (v) => setState(() => paused = v),
+              onChanged: (value) => setState(() => paused = value),
               child: Text(paused ? 'Resume' : 'Pause'),
             ),
             const SizedBox(width: 8),
-            Button(onPressed: () {}, child: const Text('Clear')),
+            Button(onPressed: _clear, child: const Text('Clear samples')),
           ],
         ),
+        child: series.isEmpty
+            ? const Text(
+                'Numeric fields will appear as lines in the form Name: value arrive.',
+              )
+            : Wrap(
+                spacing: 20,
+                runSpacing: 10,
+                children: series.values.map((item) {
+                  final checked = selected.contains(item.name);
+                  return SizedBox(
+                    width: 230,
+                    child: Row(
+                      children: [
+                        Checkbox(
+                          key: ValueKey('plot-${item.name}'),
+                          checked: checked,
+                          onChanged: (value) => setState(() {
+                            if (value ?? false) {
+                              selected.add(item.name);
+                            } else {
+                              selected.remove(item.name);
+                            }
+                          }),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(width: 4, height: 22, color: item.color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${item.name}: ${item.formattedValue}',
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
       ),
       const SizedBox(height: 14),
       _Card(
         child: SizedBox(
           height: 390,
           width: double.infinity,
-          child: CustomPaint(painter: _Chart(a, b)),
+          child: selectedSeries.isEmpty
+              ? const Center(child: Text('Select one or more detected values.'))
+              : CustomPaint(painter: _Chart(selectedSeries)),
         ),
       ),
       const SizedBox(height: 14),
-      const Row(
-        children: [
-          Expanded(
-            child: _Metric('Temperature', '23.72 °C', Color(0xff59a8ff)),
-          ),
-          SizedBox(width: 12),
-          Expanded(child: _Metric('Pressure', '1008.4 hPa', Color(0xffffb44c))),
-          SizedBox(width: 12),
-          Expanded(child: _Metric('Samples', '1,248', Color(0xff6fd58a))),
-        ],
-      ),
+      if (selectedSeries.isNotEmpty)
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: selectedSeries
+              .map(
+                (item) => SizedBox(
+                  width: 250,
+                  child: _Metric(item.name, item.formattedValue, item.color),
+                ),
+              )
+              .toList(),
+        ),
     ],
   );
+}
+
+class _PlotSample {
+  const _PlotSample(this.time, this.value);
+  final DateTime time;
+  final double value;
+}
+
+class _PlotSeries {
+  _PlotSeries(this.name, this.unit, this.color);
+  final String name;
+  String unit;
+  final Color color;
+  final samples = <_PlotSample>[];
+
+  String get formattedValue {
+    if (samples.isEmpty) return '—';
+    final value = samples.last.value;
+    final number = value == value.roundToDouble()
+        ? value.toStringAsFixed(0)
+        : value.toStringAsFixed(2);
+    return unit.isEmpty ? number : '$number $unit';
+  }
 }
 
 class SettingsPage extends StatelessWidget {
@@ -2249,43 +2389,11 @@ class SettingsPage extends StatelessWidget {
       const SizedBox(height: 14),
       _Card(
         title: 'Espressif tools',
-        child: Column(
-          children: [
-            InfoLabel(
-              label: 'esptool path',
-              child: TextBox(
-                placeholder: 'Automatically detect in the application folder',
-              ),
-            ),
-            SizedBox(height: 12),
-            InfoBar(
-              title: Text('Demo mode'),
-              content: Text('No external write command is executed.'),
-              severity: InfoBarSeverity.info,
-            ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 14),
-      const _Card(
-        title: 'Behavior',
-        child: Column(
-          children: [
-            _Setting(
-              'Remember last port',
-              'Restore port and baud rate at startup',
-            ),
-            SizedBox(height: 14),
-            _Setting(
-              'Reopen monitor after flashing',
-              'Wait 600 ms before connecting',
-            ),
-            SizedBox(height: 14),
-            _Intro(
-              'Confirm flash erase',
-              'Always ask before erasing the entire flash',
-            ),
-          ],
+        child: InfoLabel(
+          label: 'esptool path',
+          child: TextBox(
+            placeholder: 'Automatically detect in the application folder',
+          ),
         ),
       ),
     ],
@@ -2448,35 +2556,6 @@ class _Toggle extends StatelessWidget {
   );
 }
 
-class _Setting extends StatefulWidget {
-  const _Setting(this.title, this.body);
-  final String title, body;
-  @override
-  State<_Setting> createState() => _SettingState();
-}
-
-class _SettingState extends State<_Setting> {
-  bool value = true;
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.title),
-            Text(
-              widget.body,
-              style: FluentTheme.of(context).typography.caption,
-            ),
-          ],
-        ),
-      ),
-      ToggleSwitch(checked: value, onChanged: (v) => setState(() => value = v)),
-    ],
-  );
-}
-
 class _TechnicalLog extends StatelessWidget {
   const _TechnicalLog(this.text);
   final String text;
@@ -2526,8 +2605,8 @@ class _Metric extends StatelessWidget {
 }
 
 class _Chart extends CustomPainter {
-  const _Chart(this.a, this.b);
-  final bool a, b;
+  const _Chart(this.series);
+  final List<_PlotSeries> series;
   @override
   void paint(Canvas c, Size s) {
     final grid = Paint()
@@ -2541,15 +2620,34 @@ class _Chart extends CustomPainter {
       final x = s.width * i / 10;
       c.drawLine(Offset(x, 0), Offset(x, s.height), grid);
     }
-    void line(Color color, double phase, double base, double amp) {
+    final samples = series.expand((item) => item.samples).toList();
+    if (samples.isEmpty) return;
+    var minimum = samples.first.value;
+    var maximum = samples.first.value;
+    var firstTime = samples.first.time;
+    var lastTime = samples.first.time;
+    for (final sample in samples.skip(1)) {
+      minimum = math.min(minimum, sample.value);
+      maximum = math.max(maximum, sample.value);
+      if (sample.time.isBefore(firstTime)) firstTime = sample.time;
+      if (sample.time.isAfter(lastTime)) lastTime = sample.time;
+    }
+    final valueRange = maximum == minimum ? 1.0 : maximum - minimum;
+    final timeRange = math.max(
+      1,
+      lastTime.difference(firstTime).inMilliseconds,
+    );
+
+    void line(_PlotSeries item) {
+      if (item.samples.isEmpty) return;
       final p = Path();
-      for (var i = 0; i <= 160; i++) {
-        final x = s.width * i / 160,
-            y =
-                s.height *
-                (base +
-                    math.sin(i / 10 + phase) * amp +
-                    math.sin(i / 3.7) * amp * .18);
+      for (var i = 0; i < item.samples.length; i++) {
+        final sample = item.samples[i];
+        final x =
+            s.width *
+            sample.time.difference(firstTime).inMilliseconds /
+            timeRange;
+        final y = s.height - (sample.value - minimum) / valueRange * s.height;
         if (i == 0) {
           p.moveTo(x, y);
         } else {
@@ -2559,18 +2657,19 @@ class _Chart extends CustomPainter {
       c.drawPath(
         p,
         Paint()
-          ..color = color
+          ..color = item.color
           ..strokeWidth = 2
           ..style = PaintingStyle.stroke,
       );
     }
 
-    if (a) line(const Color(0xff59a8ff), 0, .35, .08);
-    if (b) line(const Color(0xffffb44c), 1.4, .68, .12);
+    for (final item in series) {
+      line(item);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant _Chart old) => old.a != a || old.b != b;
+  bool shouldRepaint(covariant _Chart old) => true;
 }
 
 class _InputLock extends StatelessWidget {

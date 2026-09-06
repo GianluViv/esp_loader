@@ -25,15 +25,26 @@ void main() {
     make('.pio/build/esp32dev/bootloader.bin');
     make('.pio/build/esp32dev/partitions.bin');
     make('.pio/build/esp32dev/firmware.bin');
+    final bootApp = make('framework/boot_app0.bin');
+    make('.pio/build/esp32dev/idedata.json', '''
+{"extra":{"flash_images":[
+  {"offset":"0x1000","path":"${root.path}/.pio/build/esp32dev/bootloader.bin"},
+  {"offset":"0x8000","path":"${root.path}/.pio/build/esp32dev/partitions.bin"},
+  {"offset":"0xe000","path":"${bootApp.path}"}
+],"application_offset":"0x10000"}}
+''');
 
     final result = await ProjectImportService.import(root.path);
 
     expect(result.type, EspProjectType.platformIo);
     expect(result.environment, 'esp32dev');
     expect(result.bundle.chip, 'ESP32');
+    expect(result.bundle.flashFrequency, '40 MHz');
+    expect(result.bundle.flashSize, '4 MB');
     expect(result.bundle.images.map((image) => image.address), [
       '0x1000',
       '0x8000',
+      '0xe000',
       '0x10000',
     ]);
   });

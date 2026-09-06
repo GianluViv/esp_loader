@@ -34,6 +34,28 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('No operations yet.'), findsOneWidget);
   });
+  testWidgets('Plot discovers and selects numeric serial values', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final lines = StreamController<String>();
+    addTearDown(lines.close);
+    await tester.pumpWidget(FluentApp(home: PlotPage(lines: lines.stream)));
+    lines.add('[22:19:43.627] tRH: T1: 28.56°C, RH1: 52.44%');
+    await tester.pumpAndSettle();
+    expect(find.text('T1: 28.56 °C'), findsOneWidget);
+    expect(find.text('RH1: 52.44 %'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('plot-T1')));
+    await tester.pump();
+    expect(find.text('Select one or more detected values.'), findsNothing);
+    await tester.tap(find.text('Clear samples'));
+    await tester.pump();
+    expect(find.text('T1: —'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 150));
+  });
   testWidgets('program cannot start without a serial port', (tester) async {
     await pumpDesktop(tester);
     await tester.pumpWidget(
@@ -250,7 +272,7 @@ void main() {
     expect(find.textContaining('Erase interrupted.'), findsOneWidget);
     expect(find.text('Flash erased successfully'), findsNothing);
   });
-  testWidgets('Test preserves configured firmware offsets and settings', (
+  testWidgets('Test configures flash settings and preserves firmware offsets', (
     tester,
   ) async {
     await pumpProgrammer(
@@ -264,15 +286,49 @@ void main() {
           ),
     );
     await tester.enterText(find.byType(TextBox).first, '0x2000');
-    await tester.tap(find.text('Test'));
+    await tester.tap(find.byKey(const Key('test-device-button')));
     await tester.pumpAndSettle();
     expect(
       tester.widget<TextBox>(find.byType(TextBox).first).controller!.text,
       '0x2000',
     );
-    expect(find.text('16 MB'), findsOneWidget);
-    expect(find.text('80 MHz'), findsOneWidget);
+    expect(find.text('4 MB'), findsWidgets);
+    expect(find.text('40 MHz'), findsOneWidget);
     expect(find.text('ESP32 · 4 MB'), findsOneWidget);
+    final testTop = tester.getTopLeft(
+      find.byKey(const Key('test-device-button')),
+    );
+    final configurationTop = tester.getTopLeft(
+      find.text('Flash configuration'),
+    );
+    expect(testTop.dy, lessThan(configurationTop.dy));
+  });
+
+  testWidgets('Test suspends and restores an active serial monitor', (
+    tester,
+  ) async {
+    var monitorSuspended = false;
+    bool? monitorRestored;
+    await pumpProgrammer(
+      tester,
+      ControlledFlashService(),
+      beforeFlash: () async {
+        monitorSuspended = true;
+        return true;
+      },
+      afterFlash: (resume) async => monitorRestored = resume,
+      testDevice: ({required port, required baud}) async {
+        expect(monitorSuspended, isTrue);
+        return const EspConnectionResult(
+          chip: 'ESP32',
+          flashSize: '4 MB',
+          output: 'test',
+        );
+      },
+    );
+    await tester.tap(find.byKey(const Key('test-device-button')));
+    await tester.pumpAndSettle();
+    expect(monitorRestored, isTrue);
   });
 
   testWidgets('failed Test clears previous device detection', (tester) async {
@@ -289,10 +345,10 @@ void main() {
         );
       },
     );
-    await tester.tap(find.text('Test'));
+    await tester.tap(find.byKey(const Key('test-device-button')));
     await tester.pumpAndSettle();
     expect(find.text('ESP32 · 4 MB'), findsOneWidget);
-    await tester.tap(find.text('Test'));
+    await tester.tap(find.byKey(const Key('test-device-button')));
     await tester.pumpAndSettle();
     expect(find.text('Not detected'), findsOneWidget);
     expect(find.text('ESP32 · 4 MB'), findsNothing);
@@ -315,7 +371,7 @@ void main() {
             output: 'test',
           ),
     );
-    await tester.tap(find.text('Test'));
+    await tester.tap(find.byKey(const Key('test-device-button')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Refresh'));
     await tester.pumpAndSettle();
