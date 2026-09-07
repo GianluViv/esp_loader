@@ -2165,14 +2165,18 @@ class _MonitorLine {
 }
 
 class PlotPage extends StatefulWidget {
-  const PlotPage({super.key, required this.lines});
+  const PlotPage({super.key, required this.lines, this.now});
   final Stream<String> lines;
+  final DateTime Function()? now;
   @override
   State<PlotPage> createState() => _PlotPageState();
 }
 
 class _PlotPageState extends State<PlotPage> {
   static const maxSamplesPerSeries = 600;
+  static const maxActiveSeries = 8;
+  static const maxAvailableSeries = 64;
+  static const discoveryWindow = Duration(seconds: 5);
   static const colors = [
     Color(0xff59a8ff),
     Color(0xffffb44c),
@@ -2184,8 +2188,27 @@ class _PlotPageState extends State<PlotPage> {
 
   StreamSubscription<String>? subscription;
   final series = <String, _PlotSeries>{};
+  final candidates = <String, DateTime>{};
   final selected = <String>{};
   bool paused = false;
+  bool compatibilityMode = false;
+  bool discoveryLimitReached = false;
+  final prefixInput = TextEditingController();
+
+  Set<String> get allowedPrefixes => compatibilityMode
+      ? prefixInput.text
+            .split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toSet()
+      : const {'PLOT'};
+
+  void _resetDiscovery() {
+    series.clear();
+    candidates.clear();
+    selected.clear();
+    discoveryLimitReached = false;
+  }
 
   @override
   void initState() {
@@ -2204,15 +2227,40 @@ class _PlotPageState extends State<PlotPage> {
   @override
   void dispose() {
     subscription?.cancel();
+    prefixInput.dispose();
     super.dispose();
   }
 
   void _receive(String line) {
     if (paused) return;
-    final measurements = parsePlotMeasurements(line);
+    final measurements = parsePlotMeasurements(
+      line,
+      allowedPrefixes: allowedPrefixes,
+      qualifyNames: compatibilityMode,
+    );
     if (measurements.isEmpty) return;
-    final now = DateTime.now();
+    final now = widget.now?.call() ?? DateTime.now();
+    candidates.removeWhere(
+      (_, seenAt) => now.difference(seenAt) > discoveryWindow,
+    );
     for (final measurement in measurements) {
+      if (!series.containsKey(measurement.name)) {
+        final firstSeenAt = candidates[measurement.name];
+        if (firstSeenAt == null ||
+            now.difference(firstSeenAt) > discoveryWindow) {
+          if (candidates.length >= maxAvailableSeries) {
+            discoveryLimitReached = true;
+          } else {
+            candidates[measurement.name] = now;
+          }
+          continue;
+        }
+        candidates.remove(measurement.name);
+        if (series.length >= maxAvailableSeries) {
+          discoveryLimitReached = true;
+          continue;
+        }
+      }
       final item = series.putIfAbsent(
         measurement.name,
         () => _PlotSeries(
@@ -2222,6 +2270,7 @@ class _PlotPageState extends State<PlotPage> {
         ),
       );
       item.unit = measurement.unit.isEmpty ? item.unit : measurement.unit;
+      if (!selected.contains(item.name)) continue;
       item.samples.add(_PlotSample(now, measurement.value));
       if (item.samples.length > maxSamplesPerSeries) {
         item.samples.removeRange(0, item.samples.length - maxSamplesPerSeries);
@@ -2248,11 +2297,50 @@ class _PlotPageState extends State<PlotPage> {
     children: [
       const _Intro(
         'Real-time serial data',
-        'Preview of numeric values extracted from received lines.',
+        'Select up to 8 variables to acquire from the serial monitor.',
       ),
       const SizedBox(height: 16),
       _Card(
-        title: 'Detected values',
+        title: 'Data source',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ToggleSwitch(
+              key: const Key('plot-compatibility'),
+              checked: compatibilityMode,
+              onChanged: (value) => setState(() {
+                compatibilityMode = value;
+                _resetDiscovery();
+              }),
+              content: const Text('Compatibility mode'),
+            ),
+            const SizedBox(height: 8),
+            if (compatibilityMode)
+              InfoLabel(
+                label: 'Allowed prefixes (comma-separated, exact match)',
+                child: TextBox(
+                  key: const Key('plot-prefixes'),
+                  controller: prefixInput,
+                  placeholder: 'tRH, RPM',
+                  onChanged: (_) => setState(_resetDiscovery),
+                ),
+              )
+            else
+              const Text(
+                'Firmware format: PLOT: temperature:28.56, humidity:52.44',
+              ),
+            const SizedBox(height: 8),
+            const Text(
+              'A variable appears after it is received twice within 5 seconds.',
+            ),
+            const SizedBox(height: 8),
+            const Text('Changing the source clears variables and samples.'),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      _Card(
+        title: 'Available variables · ${selected.length}/8 acquiring',
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -2267,7 +2355,7 @@ class _PlotPageState extends State<PlotPage> {
         ),
         child: series.isEmpty
             ? const Text(
-                'Numeric fields will appear as lines in the form Name: value arrive.',
+                'Waiting for numeric fields from the configured prefixes.',
               )
             : Wrap(
                 spacing: 20,
@@ -2281,13 +2369,17 @@ class _PlotPageState extends State<PlotPage> {
                         Checkbox(
                           key: ValueKey('plot-${item.name}'),
                           checked: checked,
-                          onChanged: (value) => setState(() {
-                            if (value ?? false) {
-                              selected.add(item.name);
-                            } else {
-                              selected.remove(item.name);
-                            }
-                          }),
+                          onChanged:
+                              !checked && selected.length >= maxActiveSeries
+                              ? null
+                              : (value) => setState(() {
+                                  if (value ?? false) {
+                                    selected.add(item.name);
+                                  } else {
+                                    selected.remove(item.name);
+                                    item.samples.clear();
+                                  }
+                                }),
                         ),
                         const SizedBox(width: 8),
                         Container(width: 4, height: 22, color: item.color),
@@ -2303,6 +2395,14 @@ class _PlotPageState extends State<PlotPage> {
                   );
                 }).toList(),
               ),
+      ),
+      if (discoveryLimitReached)
+        const Text(
+          'Discovery limited to 64 variables. Narrow the allowed prefixes or use stable firmware names.',
+        ),
+      const SizedBox(height: 14),
+      const Text(
+        'Only selected variables store samples. Deselecting a variable clears its history.',
       ),
       const SizedBox(height: 14),
       _Card(

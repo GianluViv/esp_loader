@@ -10,13 +10,18 @@ class PlotMeasurement {
   final String unit;
 }
 
-List<PlotMeasurement> parsePlotMeasurements(String line) {
+List<PlotMeasurement> parsePlotMeasurements(
+  String line, {
+  Set<String> allowedPrefixes = const {'PLOT'},
+  bool qualifyNames = false,
+}) {
   var text = line.trim();
   text = text.replaceFirst(RegExp(r'^\[\d{2}:\d{2}:\d{2}\.\d{3}\]\s*'), '');
 
   final prefixMatch = RegExp(r'^([^:]+):\s*(.*)$').firstMatch(text);
   if (prefixMatch == null) return const [];
   final prefix = prefixMatch.group(1)!.trim();
+  if (!allowedPrefixes.contains(prefix)) return const [];
   var payload = prefixMatch.group(2)!.trim();
   payload = payload.replaceAll(
     RegExp(r'\b\d{2}:\d{2}:\d{2}(?:\.\d{3})?\b'),
@@ -43,7 +48,7 @@ List<PlotMeasurement> parsePlotMeasurements(String line) {
         if (name.contains('. ')) name = name.split('. ').last.trim();
         final value = double.parse(match.group(2)!.replaceAll(',', '.'));
         return PlotMeasurement(
-          name: name,
+          name: qualifyNames ? '$prefix / $name' : name,
           value: value,
           unit: match.group(3)?.trim() ?? '',
         );

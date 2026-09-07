@@ -44,17 +44,119 @@ void main() {
     final lines = StreamController<String>();
     addTearDown(lines.close);
     await tester.pumpWidget(FluentApp(home: PlotPage(lines: lines.stream)));
-    lines.add('[22:19:43.627] tRH: T1: 28.56°C, RH1: 52.44%');
+    lines.add('DEBUG: unwanted:42');
+    lines.add('[22:19:43.627] PLOT: T1: 28.56°C, RH1: 52.44%');
+    lines.add('[22:19:44.627] PLOT: T1: 28.57°C, RH1: 52.45%');
     await tester.pumpAndSettle();
-    expect(find.text('T1: 28.56 °C'), findsOneWidget);
-    expect(find.text('RH1: 52.44 %'), findsOneWidget);
+    expect(find.textContaining('unwanted'), findsNothing);
+    expect(find.text('T1: —'), findsOneWidget);
+    expect(find.text('RH1: —'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('plot-T1')));
     await tester.pump();
+    lines.add('PLOT: T1:29°C, RH1:53%');
+    await tester.pump();
+    expect(find.text('T1: 29 °C'), findsOneWidget);
+    expect(find.text('RH1: —'), findsOneWidget);
     expect(find.text('Select one or more detected values.'), findsNothing);
     await tester.tap(find.text('Clear samples'));
     await tester.pump();
     expect(find.text('T1: —'), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 150));
+  });
+  testWidgets(
+    'Plot limits acquisition and resets discovery when source changes',
+    (tester) async {
+      tester.view.physicalSize = const Size(1600, 1400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final lines = StreamController<String>();
+      addTearDown(lines.close);
+      await tester.pumpWidget(FluentApp(home: PlotPage(lines: lines.stream)));
+      lines.add('PLOT: ${List.generate(65, (i) => 'v$i:$i').join(', ')}');
+      lines.add('PLOT: ${List.generate(65, (i) => 'v$i:$i').join(', ')}');
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('plot-v63')), findsOneWidget);
+      expect(find.byKey(const ValueKey('plot-v64')), findsNothing);
+      for (var i = 0; i < 8; i++) {
+        await tester.tap(find.byKey(ValueKey('plot-v$i')));
+        await tester.pump();
+      }
+      expect(
+        tester
+            .widget<Checkbox>(find.byKey(const ValueKey('plot-v8')))
+            .onChanged,
+        isNull,
+      );
+      lines.add('PLOT: v0:99, v8:88');
+      await tester.pump();
+      expect(find.text('v0: 99'), findsOneWidget);
+      expect(find.text('v8: —'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('plot-v0')));
+      await tester.pump();
+      expect(find.text('v0: —'), findsOneWidget);
+      expect(
+        tester
+            .widget<Checkbox>(find.byKey(const ValueKey('plot-v8')))
+            .onChanged,
+        isNotNull,
+      );
+      await tester.tap(find.byKey(const Key('plot-compatibility')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('plot-v1')), findsNothing);
+      lines.add('RPM: M1:10');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('plot-RPM / M1')), findsNothing);
+      await tester.enterText(
+        find.byKey(const Key('plot-prefixes')),
+        'RPM, tRH',
+      );
+      lines.add('RPM: M1:10');
+      lines.add('tRH: M1:20');
+      lines.add('DEBUG: M1:30');
+      lines.add('RPM: M1:11');
+      lines.add('tRH: M1:21');
+      lines.add('DEBUG: M1:31');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('plot-RPM / M1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('plot-tRH / M1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('plot-DEBUG / M1')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('plot-RPM / M1')));
+      await tester.tap(find.text('Pause'));
+      lines.add('RPM: M1:40');
+      await tester.pump();
+      expect(find.text('RPM / M1: —'), findsOneWidget);
+      await tester.tap(find.text('Resume'));
+      lines.add('RPM: M1:50');
+      await tester.pump();
+      expect(find.text('RPM / M1: 50'), findsOneWidget);
+      await tester.pumpAndSettle();
+    },
+  );
+  testWidgets('Plot requires repetition within the discovery window', (
+    tester,
+  ) async {
+    var now = DateTime(2026, 9, 7, 12);
+    final lines = StreamController<String>();
+    addTearDown(lines.close);
+    await tester.pumpWidget(
+      FluentApp(
+        home: PlotPage(lines: lines.stream, now: () => now),
+      ),
+    );
+    lines.add('PLOT: slow:1');
+    await tester.pump();
+    expect(find.byKey(const ValueKey('plot-slow')), findsNothing);
+
+    now = now.add(const Duration(seconds: 6));
+    lines.add('PLOT: slow:2');
+    await tester.pump();
+    expect(find.byKey(const ValueKey('plot-slow')), findsNothing);
+
+    now = now.add(const Duration(seconds: 5));
+    lines.add('PLOT: slow:3');
+    await tester.pump();
+    expect(find.byKey(const ValueKey('plot-slow')), findsOneWidget);
   });
   testWidgets('program cannot start without a serial port', (tester) async {
     await pumpDesktop(tester);
