@@ -189,7 +189,8 @@ Requirements:
 
 - Flutter with Windows or Linux desktop support;
 - the native compiler and desktop dependencies required by Flutter for the selected platform;
-- esptool 4 or newer available on `PATH`;
+- Python with `pip` available on `PATH`; ESP Loader can install or update
+  `esptool` automatically for the current user when device detection needs it;
 - permission to access the selected serial port.
 
 On Linux, serial access commonly requires membership in the `dialout` group. Follow the Flutter desktop setup instructions for your distribution before building.
@@ -221,7 +222,7 @@ For device detection, ESP Loader tries these commands in order:
 | `py -m esptool` | `python3 -m esptool` |
 | `python -m esptool` |  |
 
-Before flash or erase, ESP Loader probes the same candidates with `version` and requires esptool 4 or newer. It translates command and flash-option names for esptool 4's underscore syntax. Bundled esptool binaries are planned but are not part of the repository today.
+Before flash or erase, ESP Loader probes the same candidates with `version` and requires esptool 4 or newer. If the Python module is missing, **Test** installs it with `pip --user` and retries once. It translates command and flash-option names for esptool 4's underscore syntax. Bundled esptool binaries are planned but are not part of the repository today.
 
 ## Safety
 
@@ -266,5 +267,9 @@ This repository does not currently contain a license. Consequently, public visib
 ## Releases
 
 There are no official releases yet. When packages are ready, this section should link directly to GitHub Releases and list the application version, Windows and Linux artifacts, release notes, and SHA-256 checksums. Until then, the version in application metadata should not be interpreted as a published stable release.
+
+On Windows, `release.bat` builds and copies the complete Flutter bundle to
+`release\`. When Enigma Virtual Box is installed, it also creates the single-file
+`release_portable\esp_loader.exe`; otherwise the regular bundle remains usable.
 
 See [CHANGELOG.md](CHANGELOG.md) for unreleased development changes and [docs/PUBLISHING.md](docs/PUBLISHING.md) for the proposed GitHub description, topics, screenshot checklist, and release checklist.

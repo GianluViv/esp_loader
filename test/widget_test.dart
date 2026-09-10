@@ -25,6 +25,10 @@ void main() {
     expect(find.text('Programming'), findsWidgets);
     expect(find.text('Monitor'), findsOneWidget);
     expect(find.text('Plot'), findsOneWidget);
+    final navigation = tester.widget<NavigationView>(
+      find.byType(NavigationView),
+    );
+    expect(navigation.pane?.size?.openWidth, 160);
     expect(find.text('Settings'), findsOneWidget);
   });
   testWidgets('toggles technical log from serial controls', (tester) async {

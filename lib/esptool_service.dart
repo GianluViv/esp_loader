@@ -17,6 +17,21 @@ class EspToolService {
   static Future<EspConnectionResult> testConnection({
     required String port,
     required String baud,
+    void Function(String message)? onStatus,
+  }) async {
+    try {
+      return await _testConnection(port: port, baud: baud);
+    } on EspToolNotFoundException {
+      onStatus?.call('esptool is missing. Installing it automatically...');
+      await install(onStatus: onStatus);
+      onStatus?.call('esptool installed. Testing the ESP connection...');
+      return _testConnection(port: port, baud: baud);
+    }
+  }
+
+  static Future<EspConnectionResult> _testConnection({
+    required String port,
+    required String baud,
   }) async {
     final attempts = Platform.isWindows
         ? const [
@@ -44,12 +59,44 @@ class EspToolService {
         ]);
       } on ProcessException catch (error) {
         lastError = error;
-        if (error.errorCode != 2) rethrow;
+        if (error.errorCode != 2 && !_moduleIsMissing(error.message)) rethrow;
       }
     }
-    throw StateError(
-      'esptool was not found. Install it or add it to PATH. ${lastError ?? ''}',
-    );
+    throw EspToolNotFoundException('esptool was not found. ${lastError ?? ''}');
+  }
+
+  static Future<void> install({void Function(String message)? onStatus}) async {
+    final interpreters = Platform.isWindows
+        ? const [('py', <String>[]), ('python', <String>[])]
+        : const [('python3', <String>[]), ('python', <String>[])];
+    Object? lastError;
+    for (final interpreter in interpreters) {
+      try {
+        onStatus?.call('Installing esptool with ${interpreter.$1}...');
+        final process = await Process.run(interpreter.$1, [
+          ...interpreter.$2,
+          '-m',
+          'pip',
+          'install',
+          '--user',
+          '--upgrade',
+          '--disable-pip-version-check',
+          'esptool',
+        ]).timeout(const Duration(minutes: 5));
+        final output = '${process.stdout}\n${process.stderr}'.trim();
+        if (process.exitCode == 0) return;
+        lastError = output;
+      } on Object catch (error) {
+        lastError = error;
+      }
+    }
+    throw StateError('Automatic esptool installation failed. $lastError');
+  }
+
+  static bool _moduleIsMissing(String message) {
+    final normalized = message.toLowerCase();
+    return normalized.contains('no module named') &&
+        normalized.contains('esptool');
   }
 
   static Future<EspConnectionResult> _run(
@@ -84,6 +131,15 @@ class EspToolService {
       flashSize: detectFlashSize(output),
     );
   }
+}
+
+class EspToolNotFoundException implements Exception {
+  const EspToolNotFoundException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 String? detectFlashSize(String output) {

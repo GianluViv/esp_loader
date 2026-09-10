@@ -20,4 +20,9 @@ void main() {
     expect(detectFlashSize('Flash size: 4096 KB'), '4096 KB');
     expect(detectFlashSize('Manufacturer: ef'), isNull);
   });
+
+  test('missing esptool exception has a readable message', () {
+    const error = EspToolNotFoundException('esptool was not found.');
+    expect(error.toString(), 'esptool was not found.');
+  });
 }

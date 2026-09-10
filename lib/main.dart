@@ -96,6 +96,7 @@ class _AppShellState extends State<AppShell> {
         selected: selected,
         onChanged: (v) => setState(() => selected = v),
         displayMode: PaneDisplayMode.auto,
+        size: const NavigationPaneSize(openWidth: 160),
         items: [
           PaneItem(
             icon: const Icon(FluentIcons.installation),
@@ -295,10 +296,17 @@ class _FlashPageState extends State<FlashPage> {
     });
     try {
       resumeMonitor = await widget.beforeFlash?.call() ?? false;
-      final result = await (widget.testDevice ?? EspToolService.testConnection)(
-        port: port,
-        baud: baud,
-      );
+      final result = widget.testDevice != null
+          ? await widget.testDevice!(port: port, baud: baud)
+          : await EspToolService.testConnection(
+              port: port,
+              baud: baud,
+              onStatus: (message) {
+                if (!mounted) return;
+                widget.onLog('$message\n');
+                setState(() => connectionMessage = message);
+              },
+            );
       if (!mounted) return;
       widget.onLog('${result.output}\n');
       setState(() {
@@ -1283,6 +1291,8 @@ class _FlashPageState extends State<FlashPage> {
           content: Text(connectionMessage!),
           severity: connectionTestFailed
               ? InfoBarSeverity.error
+              : testingConnection
+              ? InfoBarSeverity.info
               : InfoBarSeverity.success,
         ),
       ],
@@ -1746,6 +1756,15 @@ class _MonitorPageState extends State<MonitorPage> {
     });
   }
 
+  void _clearDetectedPrefixes() {
+    setState(() {
+      detectedPrefixes.clear();
+      selectedPrefixes.clear();
+      termLines.clear();
+      selectedLogTab = 'All';
+    });
+  }
+
   List<_MonitorLine> get visibleLines => _applyCommonFilters(lines);
 
   List<_MonitorLine> get currentVisibleLines {
@@ -2068,6 +2087,11 @@ class _MonitorPageState extends State<MonitorPage> {
           spacing: 14,
           runSpacing: 5,
           children: [
+            Button(
+              key: const ValueKey('clear-detected-prefixes'),
+              onPressed: _clearDetectedPrefixes,
+              child: const Text('Clear prefixes'),
+            ),
             for (final prefix in prefixes)
               Row(
                 mainAxisSize: MainAxisSize.min,

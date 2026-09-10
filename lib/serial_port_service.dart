@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:flutter_libserialport/flutter_libserialport.dart';
+
 class SerialPortInfo {
   const SerialPortInfo(this.port, [this.description]);
 
@@ -25,21 +27,57 @@ class SerialPortService {
   }
 
   static Future<List<SerialPortInfo>> _discoverWindows() async {
-    final result = await Process.run('powershell.exe', const [
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      r'Get-CimInstance Win32_SerialPort | ForEach-Object { "$($_.DeviceID)`t$($_.Name)" }',
-    ]).timeout(const Duration(seconds: 8));
-    if (result.exitCode != 0) {
-      throw ProcessException(
-        'powershell.exe',
-        const [],
-        result.stderr.toString().trim(),
-        result.exitCode,
-      );
+    try {
+      final result = await Process.run('powershell.exe', const [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        r'''
+$descriptions = @{}
+Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match '\((COM\d+)\)' } |
+  ForEach-Object { $descriptions[$Matches[1].ToUpperInvariant()] = $_.Name }
+
+$ports = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+
+$serialMap = Get-ItemProperty `
+  -LiteralPath 'HKLM:\HARDWARE\DEVICEMAP\SERIALCOMM' `
+  -ErrorAction SilentlyContinue
+if ($serialMap) {
+  $serialMap.PSObject.Properties |
+    Where-Object { $_.Name -notlike 'PS*' -and $_.Value -match '^COM\d+$' } |
+    ForEach-Object { [void]$ports.Add([string]$_.Value) }
+}
+
+Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
+  Where-Object { $_.DeviceID -match '^COM\d+$' } |
+  ForEach-Object {
+    $port = $_.DeviceID.ToUpperInvariant()
+    [void]$ports.Add($port)
+    if (-not $descriptions.ContainsKey($port)) { $descriptions[$port] = $_.Name }
+  }
+
+$ports | ForEach-Object {
+  $port = $_.ToUpperInvariant()
+  "$port`t$($descriptions[$port])"
+}
+''',
+      ]).timeout(const Duration(seconds: 8));
+      if (result.exitCode == 0) {
+        final ports = parseWindowsSerialPorts(result.stdout.toString());
+        if (ports.isNotEmpty) return ports;
+      }
+    } on Exception {
+      // La libreria nativa sottostante resta disponibile come fallback quando
+      // PowerShell, CIM o il registro non sono accessibili.
     }
-    return parseWindowsSerialPorts(result.stdout.toString());
+
+    return SerialPort.availablePorts
+        .map((port) => SerialPortInfo(port.toUpperCase()))
+        .toList()
+      ..sort((a, b) => _compareWindowsPorts(a.port, b.port));
   }
 
   static Future<List<SerialPortInfo>> _discoverUnix(
@@ -59,7 +97,7 @@ class SerialPortService {
 }
 
 List<SerialPortInfo> parseWindowsSerialPorts(String output) {
-  final ports = <SerialPortInfo>[];
+  final ports = <String, SerialPortInfo>{};
   for (final rawLine in output.split(RegExp(r'[\r\n]+'))) {
     final line = rawLine.trim();
     if (line.isEmpty) continue;
@@ -69,11 +107,18 @@ List<SerialPortInfo> parseWindowsSerialPorts(String output) {
     final description = columns.length > 1
         ? columns.sublist(1).join(' ').trim()
         : null;
-    ports.add(SerialPortInfo(port.toUpperCase(), description));
+    final normalizedPort = port.toUpperCase();
+    final previous = ports[normalizedPort];
+    ports[normalizedPort] = SerialPortInfo(
+      normalizedPort,
+      description?.isNotEmpty == true ? description : previous?.description,
+    );
   }
-  ports.sort((a, b) {
-    int number(String value) => int.tryParse(value.substring(3)) ?? 0;
-    return number(a.port).compareTo(number(b.port));
-  });
-  return ports;
+  return ports.values.toList()
+    ..sort((a, b) => _compareWindowsPorts(a.port, b.port));
+}
+
+int _compareWindowsPorts(String a, String b) {
+  int number(String value) => int.tryParse(value.substring(3)) ?? 0;
+  return number(a).compareTo(number(b));
 }

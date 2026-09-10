@@ -16,4 +16,15 @@ void main() {
     expect(ports, hasLength(1));
     expect(ports.single.port, 'COM7');
   });
+
+  test('keeps registry-only ports and merges PnP descriptions', () {
+    final ports = parseWindowsSerialPorts(
+      'COM7\tKitProg2 USB-UART (COM7)\r\n'
+      'COM3\t\r\n'
+      'com3\tUSB-Enhanced-SERIAL CH9102 (COM3)\r\n',
+    );
+
+    expect(ports.map((item) => item.port), ['COM3', 'COM7']);
+    expect(ports.first.description, 'USB-Enhanced-SERIAL CH9102 (COM3)');
+  });
 }

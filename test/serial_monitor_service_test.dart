@@ -280,6 +280,31 @@ void main() {
     expect(find.textContaining('I (123) NET: connected'), findsOneWidget);
   });
 
+  testWidgets('clears detected prefixes and discovers them again', (
+    tester,
+  ) async {
+    final (_, connection) = await pumpMonitor(tester);
+    await tester.tap(find.byKey(const Key('monitor-connect-button')));
+    await tester.pumpAndSettle();
+
+    connection.controller.add(utf8.encode('MESH: first connection\n'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prefix-checkbox-MESH')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('prefix-checkbox-MESH')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('monitor-tab-MESH')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('clear-detected-prefixes')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prefix-checkbox-MESH')), findsNothing);
+    expect(find.byKey(const ValueKey('monitor-tab-MESH')), findsNothing);
+
+    connection.controller.add(utf8.encode('MESH: new connection\n'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('prefix-checkbox-MESH')), findsOneWidget);
+  });
+
   testWidgets('one selected prefix creates its own tab', (tester) async {
     final (_, connection) = await pumpMonitor(tester);
     await tester.tap(find.byKey(const Key('monitor-connect-button')));
