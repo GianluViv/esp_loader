@@ -35,14 +35,26 @@ Capture screenshots only after the relevant workflow has been validated and the 
 
 Do not add these paths to the README until the files exist.
 
+Generate or refresh the complete set on Linux with:
+
+```bash
+flutter test --run-skipped --tags documentation --update-goldens test/documentation_screenshots_test.dart
+```
+
+The capture test currently expects DejaVu Sans and DejaVu Sans Mono under
+`/usr/share/fonts/TTF/`. Review all generated images before committing them,
+then run the same command without `--update-goldens` to verify the baselines.
+
 ## First release checklist
 
-- Choose and add an open-source license.
+- Confirm that the MIT license for ESP Loader and the separate GPL license for
+  esptool are present in every release artifact.
 - Decide whether the current Flutter metadata version represents the first release; update it before packaging if necessary.
 - Run `flutter analyze` and `flutter test` from a clean checkout.
 - Record Windows and Linux runtime results.
 - Record physical-device results by chip family.
-- Confirm esptool installation or bundling behavior and include required third-party licenses.
+- Verify bundled esptool 5.4.0 on both platforms and retain
+  `third_party/esptool/LICENSE` and `README.md` in every artifact.
 - Build and test the portable Windows package.
 - Build and test the Linux AppImage on more than one supported distribution.
 - Add the screenshot set and verify README rendering.
@@ -58,5 +70,10 @@ ESP-Loader-<version>-windows.zip
 ESP-Loader-<version>-linux-x86_64.AppImage
 SHA256SUMS.txt
 ```
+
+The Windows and Linux x86_64 artifacts include the official standalone
+esptool 5.4.0 executable. Publish equivalent access to its corresponding
+GPL-2.0-or-later source and keep the upstream license and provenance notice in
+the downloadable artifacts.
 
 Artifact names and architectures must reflect the packages actually produced. Do not advertise installers or architectures that have not been built and tested.

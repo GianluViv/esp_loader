@@ -24,6 +24,16 @@ flutter analyze
 flutter test
 ```
 
+The default suite skips documentation golden tests. When intentionally updating
+the public screenshots on Linux, run:
+
+```bash
+flutter test --run-skipped --tags documentation --update-goldens test/documentation_screenshots_test.dart
+```
+
+Review every generated image before committing it. Screenshots must not contain
+private paths, serial numbers, credentials, or proprietary firmware details.
+
 Add tests when changing parsers, flash validation, command construction, file handling, process lifecycle, or serial behavior. Hardware-dependent changes should state the operating system, board/chip, esptool version, trigger, and observed result in the pull request.
 
 ## Code and documentation style

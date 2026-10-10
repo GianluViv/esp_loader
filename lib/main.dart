@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter/services.dart';
 
+import 'app_settings_service.dart';
 import 'esptool_service.dart';
 import 'firmware_bundle_service.dart';
 import 'flash_service.dart';
@@ -58,7 +59,29 @@ class _AppShellState extends State<AppShell> {
   final technicalLog = ValueNotifier<String>('No operations yet.');
   final monitorKey = GlobalKey<_MonitorPageState>();
   final profileStore = LocalFlashProfileStore();
+  final settingsStore = LocalAppSettingsStore();
   final plotLines = StreamController<String>.broadcast();
+  String? esptoolPath;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadSettings());
+  }
+
+  Future<void> _loadSettings() async {
+    try {
+      final path = await settingsStore.loadEsptoolPath();
+      if (mounted) setState(() => esptoolPath = path);
+    } on Object catch (error) {
+      appendLog('Unable to load application settings: $error\n');
+    }
+  }
+
+  Future<void> _saveEsptoolPath(String? path) async {
+    await settingsStore.saveEsptoolPath(path);
+    if (mounted) setState(() => esptoolPath = path);
+  }
 
   void appendLog(String text) {
     technicalLog.value = technicalLog.value == 'No operations yet.'
@@ -86,10 +109,16 @@ class _AppShellState extends State<AppShell> {
           if (resume) await monitorKey.currentState?.resumeAfterFlash();
         },
         profileStore: profileStore,
+        esptoolPath: esptoolPath,
       ),
       MonitorPage(key: monitorKey, onLine: plotLines.add),
       PlotPage(lines: plotLines.stream),
-      SettingsPage(mode: widget.mode, onMode: widget.onMode),
+      SettingsPage(
+        mode: widget.mode,
+        onMode: widget.onMode,
+        esptoolPath: esptoolPath,
+        onEsptoolPath: _saveEsptoolPath,
+      ),
     ];
     return NavigationView(
       pane: NavigationPane(
@@ -152,6 +181,7 @@ class FlashPage extends StatefulWidget {
     this.afterFlash,
     this.profileStore,
     this.selectProjectDirectory,
+    this.esptoolPath,
   });
 
   final Future<EspConnectionResult> Function({
@@ -168,6 +198,7 @@ class FlashPage extends StatefulWidget {
   final Future<void> Function(bool resume)? afterFlash;
   final FlashProfileStore? profileStore;
   final Future<String?> Function()? selectProjectDirectory;
+  final String? esptoolPath;
   @override
   State<FlashPage> createState() => _FlashPageState();
 }
@@ -207,7 +238,9 @@ class _FlashPageState extends State<FlashPage> {
   bool stopping = false;
   bool erasing = false;
   bool get locked => busy || testingConnection || importing;
-  late final programmer = widget.programmer ?? FlashService();
+  late final programmer =
+      widget.programmer ??
+      FlashService(configuredPath: () => widget.esptoolPath);
   String operationStatus = 'Ready';
   double progress = 0;
   Timer? connectionMessageTimer;
@@ -301,6 +334,7 @@ class _FlashPageState extends State<FlashPage> {
           : await EspToolService.testConnection(
               port: port,
               baud: baud,
+              configuredPath: widget.esptoolPath,
               onStatus: (message) {
                 if (!mounted) return;
                 widget.onLog('$message\n');
@@ -2479,10 +2513,111 @@ class _PlotSeries {
   }
 }
 
-class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.mode, required this.onMode});
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({
+    super.key,
+    required this.mode,
+    required this.onMode,
+    required this.esptoolPath,
+    required this.onEsptoolPath,
+    this.validateEsptoolPath,
+    this.pickEsptoolPath,
+  });
+
   final ThemeMode mode;
   final ValueChanged<ThemeMode> onMode;
+  final String? esptoolPath;
+  final Future<void> Function(String? path) onEsptoolPath;
+  final Future<EspToolValidation> Function(String path)? validateEsptoolPath;
+  final Future<String?> Function()? pickEsptoolPath;
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  late final pathController = TextEditingController(
+    text: widget.esptoolPath ?? '',
+  );
+  bool saving = false;
+  String? status;
+  String? error;
+
+  @override
+  void didUpdateWidget(covariant SettingsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!saving && oldWidget.esptoolPath != widget.esptoolPath) {
+      pathController.text = widget.esptoolPath ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    pathController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _browse() async {
+    final path = widget.pickEsptoolPath != null
+        ? await widget.pickEsptoolPath!()
+        : (await FilePicker.platform.pickFiles(
+            dialogTitle: 'Select esptool executable',
+            type: Platform.isWindows ? FileType.custom : FileType.any,
+            allowedExtensions: Platform.isWindows ? const ['exe'] : null,
+          ))?.files.single.path;
+    if (path == null || !mounted) return;
+    setState(() {
+      pathController.text = path;
+      status = null;
+      error = null;
+    });
+  }
+
+  Future<void> _save() async {
+    if (saving) return;
+    final path = pathController.text.trim();
+    setState(() {
+      saving = true;
+      status = null;
+      error = null;
+    });
+    try {
+      if (path.isEmpty) {
+        await widget.onEsptoolPath(null);
+        if (mounted) {
+          setState(() => status = 'Automatic esptool discovery enabled.');
+        }
+        return;
+      }
+      final validation =
+          await (widget.validateEsptoolPath ??
+              EspToolService.validateExecutable)(path);
+      await widget.onEsptoolPath(validation.path);
+      if (mounted) {
+        setState(() {
+          pathController.text = validation.path;
+          status = 'esptool ${validation.version} verified and saved.';
+        });
+      }
+    } on Object catch (exception) {
+      if (mounted) {
+        setState(
+          () => error = exception
+              .toString()
+              .replaceFirst('FormatException: ', '')
+              .replaceFirst('Bad state: ', ''),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> _reset() async {
+    pathController.clear();
+    await _save();
+  }
+
   @override
   Widget build(BuildContext context) => ScaffoldPage.scrollable(
     header: const PageHeader(title: Text('Settings')),
@@ -2495,7 +2630,7 @@ class SettingsPage extends StatelessWidget {
             SizedBox(
               width: 160,
               child: ComboBox<ThemeMode>(
-                value: mode,
+                value: widget.mode,
                 isExpanded: true,
                 items: const [
                   ComboBoxItem(value: ThemeMode.system, child: Text('System')),
@@ -2503,7 +2638,7 @@ class SettingsPage extends StatelessWidget {
                   ComboBoxItem(value: ThemeMode.dark, child: Text('Dark')),
                 ],
                 onChanged: (v) {
-                  if (v != null) onMode(v);
+                  if (v != null) widget.onMode(v);
                 },
               ),
             ),
@@ -2513,11 +2648,65 @@ class SettingsPage extends StatelessWidget {
       const SizedBox(height: 14),
       _Card(
         title: 'Espressif tools',
-        child: InfoLabel(
-          label: 'esptool path',
-          child: TextBox(
-            placeholder: 'Automatically detect in the application folder',
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Leave the path empty to search beside ESP Loader, on PATH, '
+              'and through the system Python installation.',
+            ),
+            const SizedBox(height: 10),
+            InfoLabel(
+              label: 'esptool executable',
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextBox(
+                      key: const Key('esptool-path-field'),
+                      controller: pathController,
+                      enabled: !saving,
+                      placeholder: 'Automatic discovery',
+                      onSubmitted: (_) => _save(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Button(
+                    key: const Key('browse-esptool-button'),
+                    onPressed: saving ? null : _browse,
+                    child: const Text('Browse'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    key: const Key('save-esptool-button'),
+                    onPressed: saving ? null : _save,
+                    child: Text(saving ? 'Verifying…' : 'Verify and save'),
+                  ),
+                  if (widget.esptoolPath != null) ...[
+                    const SizedBox(width: 8),
+                    Button(
+                      key: const Key('reset-esptool-button'),
+                      onPressed: saving ? null : _reset,
+                      child: const Text('Use automatic'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (status != null || error != null) ...[
+              const SizedBox(height: 10),
+              InfoBar(
+                title: Text(error == null ? 'esptool ready' : 'esptool error'),
+                content: Text(error ?? status!),
+                severity: error == null
+                    ? InfoBarSeverity.success
+                    : InfoBarSeverity.error,
+                onClose: () => setState(() {
+                  status = null;
+                  error = null;
+                }),
+              ),
+            ],
+          ],
         ),
       ),
     ],

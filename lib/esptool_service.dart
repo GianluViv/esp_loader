@@ -1,6 +1,65 @@
 import 'dart:async';
 import 'dart:io';
 
+class EspToolCandidate {
+  const EspToolCandidate(this.executable, [this.prefixArguments = const []]);
+
+  final String executable;
+  final List<String> prefixArguments;
+}
+
+class EspToolValidation {
+  const EspToolValidation({required this.path, required this.version});
+
+  final String path;
+  final String version;
+}
+
+typedef EspToolProcessRunner = Future<ProcessResult> Function(
+  String executable,
+  List<String> arguments,
+);
+
+List<EspToolCandidate> espToolCandidates({
+  String? configuredPath,
+  String? applicationExecutable,
+  bool? windows,
+}) {
+  final isWindows = windows ?? Platform.isWindows;
+  final result = <EspToolCandidate>[];
+  final seen = <String>{};
+
+  void add(String executable, [List<String> prefixArguments = const []]) {
+    final key =
+        '${isWindows ? executable.toLowerCase() : executable}\u0000'
+        '${prefixArguments.join('\u0000')}';
+    if (seen.add(key)) {
+      result.add(EspToolCandidate(executable, prefixArguments));
+    }
+  }
+
+  final configured = configuredPath?.trim();
+  if (configured != null && configured.isNotEmpty) add(configured);
+
+  final executable = applicationExecutable ?? Platform.resolvedExecutable;
+  final applicationDirectory = File(executable).parent.path;
+  if (isWindows) {
+    add('$applicationDirectory${Platform.pathSeparator}esptool.exe');
+    add('esptool.exe');
+    add('esptool.py');
+    add('py', const ['-m', 'esptool']);
+    add('python', const ['-m', 'esptool']);
+  } else {
+    add('$applicationDirectory${Platform.pathSeparator}esptool');
+    add('$applicationDirectory${Platform.pathSeparator}esptool.py');
+    add('esptool');
+    add('esptool.py');
+    add('python3', const ['-m', 'esptool']);
+    add('python', const ['-m', 'esptool']);
+  }
+  return result;
+}
+
 class EspConnectionResult {
   const EspConnectionResult({
     required this.chip,
@@ -17,40 +76,37 @@ class EspToolService {
   static Future<EspConnectionResult> testConnection({
     required String port,
     required String baud,
+    String? configuredPath,
     void Function(String message)? onStatus,
   }) async {
     try {
-      return await _testConnection(port: port, baud: baud);
+      return await _testConnection(
+        port: port,
+        baud: baud,
+        configuredPath: configuredPath,
+      );
     } on EspToolNotFoundException {
       onStatus?.call('esptool is missing. Installing it automatically...');
       await install(onStatus: onStatus);
       onStatus?.call('esptool installed. Testing the ESP connection...');
-      return _testConnection(port: port, baud: baud);
+      return _testConnection(
+        port: port,
+        baud: baud,
+        configuredPath: configuredPath,
+      );
     }
   }
 
   static Future<EspConnectionResult> _testConnection({
     required String port,
     required String baud,
+    String? configuredPath,
   }) async {
-    final attempts = Platform.isWindows
-        ? const [
-            ('esptool.exe', <String>[]),
-            ('esptool.py', <String>[]),
-            ('py', ['-m', 'esptool']),
-            ('python', ['-m', 'esptool']),
-          ]
-        : const [
-            ('esptool', <String>[]),
-            ('esptool.py', <String>[]),
-            ('python3', ['-m', 'esptool']),
-          ];
-
     Object? lastError;
-    for (final attempt in attempts) {
+    for (final candidate in espToolCandidates(configuredPath: configuredPath)) {
       try {
-        return await _run(attempt.$1, [
-          ...attempt.$2,
+        return await _run(candidate.executable, [
+          ...candidate.prefixArguments,
           '--port',
           port,
           '--baud',
@@ -63,6 +119,55 @@ class EspToolService {
       }
     }
     throw EspToolNotFoundException('esptool was not found. ${lastError ?? ''}');
+  }
+
+  static Future<EspToolValidation> validateExecutable(
+    String path, {
+    EspToolProcessRunner? run,
+  }) async {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) {
+      throw const FormatException('Select an esptool executable.');
+    }
+    final file = File(trimmed);
+    if (!await file.exists()) {
+      throw FormatException('esptool was not found at $trimmed');
+    }
+    final absolutePath = file.absolute.path;
+    final runner =
+        run ?? (executable, arguments) => Process.run(executable, arguments);
+    late final ProcessResult process;
+    try {
+      process = await runner(absolutePath, const [
+        'version',
+      ]).timeout(const Duration(seconds: 15));
+    } on Object catch (error) {
+      throw StateError('Unable to run esptool: $error');
+    }
+    final output = '${process.stdout}\n${process.stderr}'.trim();
+    if (process.exitCode != 0) {
+      throw StateError(
+        'esptool version check failed (exit ${process.exitCode}). $output',
+      );
+    }
+    final major = detectEsptoolMajor(output);
+    if (major == null) {
+      throw const FormatException(
+        'The selected file did not report a recognizable esptool version.',
+      );
+    }
+    if (major < 4) {
+      throw FormatException('esptool 4 or newer is required; found $major.');
+    }
+    final version = RegExp(
+      r'(?:esptool(?:\.py)?\s+v?|^v?)(\d+(?:\.\d+)+)',
+      multiLine: true,
+      caseSensitive: false,
+    ).firstMatch(output)?.group(1);
+    return EspToolValidation(
+      path: absolutePath,
+      version: version ?? major.toString(),
+    );
   }
 
   static Future<void> install({void Function(String message)? onStatus}) async {
@@ -169,4 +274,13 @@ String? detectEspChip(String output) {
     if (normalized.contains(chip)) return chip;
   }
   return null;
+}
+
+int? detectEsptoolMajor(String output) {
+  final match = RegExp(
+    r'(?:esptool(?:\.py)?\s+v?|^v?)(\d+)\.',
+    multiLine: true,
+    caseSensitive: false,
+  ).firstMatch(output);
+  return match == null ? null : int.parse(match.group(1)!);
 }

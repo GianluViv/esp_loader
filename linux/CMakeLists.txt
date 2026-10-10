@@ -74,6 +74,14 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# flutter_libserialport 0.6.0 uses GLib's G_DEFINE_TYPE macro, which declares
+# a parent-class pointer that Clang 23 considers set but unused. Keep warnings
+# strict for the project while allowing that generated upstream declaration.
+if(TARGET flutter_libserialport_plugin)
+  target_compile_options(flutter_libserialport_plugin PRIVATE
+    -Wno-unused-but-set-global)
+endif()
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
@@ -94,15 +102,36 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
+# Keep esptool as a separate executable beside ESP Loader. This makes the
+# regular Flutter bundle and the AppImage self-contained while keeping the
+# upstream component clearly separated as a subprocess.
+set(BUNDLED_ESPTOOL
+  "${CMAKE_SOURCE_DIR}/../third_party/esptool/5.4.0/linux-x64/esptool")
+if(NOT EXISTS "${BUNDLED_ESPTOOL}")
+  message(FATAL_ERROR "Bundled esptool not found: ${BUNDLED_ESPTOOL}")
+endif()
+install(PROGRAMS "${BUNDLED_ESPTOOL}"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_SOURCE_DIR}/../third_party/esptool/LICENSE"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/share/licenses/esp_loader/esptool"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_SOURCE_DIR}/../third_party/esptool/README.md"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/share/licenses/esp_loader/esptool"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_SOURCE_DIR}/../LICENSE"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/share/licenses/esp_loader"
+  COMPONENT Runtime)
+
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)
 
-install(FILES "${CMAKE_SOURCE_DIR}/../img/icon.png"
+install(FILES "${CMAKE_SOURCE_DIR}/../img/com.ariosa.esp_loader.png"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   RENAME "esp_loader.png"
   COMPONENT Runtime)
 
-install(FILES "${CMAKE_SOURCE_DIR}/../img/icon.png"
+install(FILES "${CMAKE_SOURCE_DIR}/../img/com.ariosa.esp_loader.png"
   DESTINATION "${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/512x512/apps"
   RENAME "com.ariosa.esp_loader.png"
   COMPONENT Runtime)

@@ -75,6 +75,26 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
+# Ship the official standalone esptool beside the application. A path selected
+# by the user in Settings still has higher priority at runtime.
+set(BUNDLED_ESPTOOL
+  "${CMAKE_SOURCE_DIR}/../third_party/esptool/5.4.0/windows-x64/esptool.exe")
+if(NOT EXISTS "${BUNDLED_ESPTOOL}")
+  message(FATAL_ERROR "Bundled esptool not found: ${BUNDLED_ESPTOOL}")
+endif()
+install(FILES "${BUNDLED_ESPTOOL}"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_SOURCE_DIR}/../third_party/esptool/LICENSE"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/esptool"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_SOURCE_DIR}/../third_party/esptool/README.md"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/esptool"
+  COMPONENT Runtime)
+install(FILES "${CMAKE_SOURCE_DIR}/../LICENSE"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/licenses/esp_loader"
+  COMPONENT Runtime)
+
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)
 

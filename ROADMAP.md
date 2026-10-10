@@ -37,6 +37,8 @@ Implemented:
 - file, address, flash-capacity, and erase-sector overlap validation;
 - production ZIP export/import with SHA-256 and size verification;
 - portable persistence of image paths, offsets, enabled states, and project path.
+- verified, persistent selection of an explicit esptool executable.
+- official esptool 5.4.0 standalone binaries bundled for Windows and Linux x86_64.
 
 Remaining validation and hardening:
 
@@ -89,13 +91,11 @@ Remaining:
 
 Required before the milestone:
 
-- choose and add an open-source license;
 - complete Windows runtime and representative device-family validation;
 - produce a portable Windows package and Linux AppImage;
-- decide how esptool and its licenses are bundled or installed;
+- validate bundled esptool and its license payload in clean release machines;
 - add startup dependency and Linux serial-permission diagnostics;
 - add screenshots and release artifacts with SHA-256 checksums;
-- replace placeholder settings with functional configuration or remove them;
 - publish a support matrix backed by recorded physical tests;
 - complete a security review of command execution, ZIP/file handling, firmware parsing, and serial access.
 

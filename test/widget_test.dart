@@ -485,6 +485,72 @@ void main() {
     expect(find.text('Not detected'), findsOneWidget);
     expect(find.textContaining('successfully detected'), findsNothing);
   });
+
+  testWidgets('Settings verifies and saves an explicit esptool path', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    String? savedPath;
+
+    await tester.pumpWidget(
+      FluentApp(
+        home: SettingsPage(
+          mode: ThemeMode.dark,
+          onMode: (_) {},
+          esptoolPath: null,
+          onEsptoolPath: (path) async => savedPath = path,
+          pickEsptoolPath: () async => '/tools/esptool',
+          validateEsptoolPath: (path) async {
+            expect(path, '/tools/esptool');
+            return const EspToolValidation(
+              path: '/tools/esptool',
+              version: '5.1.0',
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('browse-esptool-button')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextBox>(find.byKey(const Key('esptool-path-field')))
+          .controller
+          ?.text,
+      '/tools/esptool',
+    );
+    await tester.tap(find.byKey(const Key('save-esptool-button')));
+    await tester.pumpAndSettle();
+
+    expect(savedPath, '/tools/esptool');
+    expect(find.text('esptool 5.1.0 verified and saved.'), findsOneWidget);
+  });
+
+  testWidgets('Settings can restore automatic esptool discovery', (
+    tester,
+  ) async {
+    String? savedPath = '/tools/esptool';
+    await tester.pumpWidget(
+      FluentApp(
+        home: SettingsPage(
+          mode: ThemeMode.dark,
+          onMode: (_) {},
+          esptoolPath: savedPath,
+          onEsptoolPath: (path) async => savedPath = path,
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('reset-esptool-button')));
+    await tester.pumpAndSettle();
+
+    expect(savedPath, isNull);
+    expect(find.text('Automatic esptool discovery enabled.'), findsOneWidget);
+  });
 }
 
 class ControlledFlashService extends FlashService {

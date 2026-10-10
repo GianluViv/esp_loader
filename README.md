@@ -28,29 +28,33 @@ ESP Loader is under active development and has not reached a public stable relea
 - Manual image selection, enablement, removal, and offset editing.
 - Editable flash mode, frequency, size, baud, and chip.
 - Firmware-target and connected-chip compatibility checks.
-- Multi-image flashing and full-chip erase through esptool 4 or 5.
+- Multi-image flashing and full-chip erase through the bundled esptool 5.4.0,
+  with support for a user-selected esptool 4 or newer.
 - Validation of files, addresses, flash capacity, and overlapping 4 KiB erase sectors.
 - Command preview, live technical output, per-image progress, cancellation, and operation timeouts.
 - Import and export of integrity-checked ESP Loader production ZIP packages.
 - Portable persistence of the selected project and flash-image list.
+- Persistent selection and verification of an explicit esptool executable.
 
 The real flash and erase workflows passed physical-device testing on Linux on September 6, 2026. Automated tests cover their validation, command construction, process lifecycle, and UI transitions.
 
 ### In development
 
 - The serial monitor has real I/O, configurable 7/8 data bits, 1/2 stop bits, parity, TX terminators, reset control, filtering, prefix tabs, copy, and log saving. Automatic USB reconnection and broader hardware/Windows testing remain.
-- Flash/monitor coordination releases an active serial port before a device operation and can reopen it afterward. More hardware testing remains.
+- Flash/monitor coordination releases an active serial port before device detection or programming and can reopen it afterward. Full-chip erase does not yet suspend the monitor automatically, and more hardware testing remains.
 - Autoload watches stable changes to enabled images and project metadata, queues changes detected during flashing, and refreshes project metadata before an automatic write. Hardware validation remains.
 - Serial plotting consumes explicit `PLOT:` records, supports a compatibility prefix filter, discovers recurring numeric variables, and acquires up to eight selected series. Zoom, configurable time windows, persistence, and hardware validation remain.
-- The Settings page changes the theme. Its esptool-path field is currently a placeholder and does not configure tool discovery.
+- Theme selection is available; persistence of the theme and other UI preferences remains in development.
 - Windows runtime verification and per-family physical-device coverage are incomplete.
+- Windows single-file and Linux AppImage scripts include esptool; clean-machine
+  packaging and runtime validation remain before publication.
 
 ### Planned
 
 - Automatic serial reconnection after USB removal.
 - Persisted serial, monitor, plot, theme, and window settings.
-- Linux AppImage and portable Windows package.
-- Bundled, licensed Espressif tooling with startup dependency checks.
+- Published, signed Windows and Linux release artifacts with checksums.
+- Startup dependency and Linux serial-permission diagnostics.
 - Plot zoom, configurable time windows, and configurable input formats.
 - Reusable profile import/export and optional combined firmware images.
 
@@ -187,10 +191,9 @@ Prebuilt releases are not available yet. Future GitHub Releases are expected to 
 
 Requirements:
 
-- Flutter with Windows or Linux desktop support;
+- Flutter stable with Windows or Linux desktop support and Dart 3.13.1 or newer;
+  the current project has been verified with Flutter 3.47.7;
 - the native compiler and desktop dependencies required by Flutter for the selected platform;
-- Python with `pip` available on `PATH`; ESP Loader can install or update
-  `esptool` automatically for the current user when device detection needs it;
 - permission to access the selected serial port.
 
 On Linux, serial access commonly requires membership in the `dialout` group. Follow the Flutter desktop setup instructions for your distribution before building.
@@ -213,16 +216,16 @@ flutter run -d windows
 
 ### esptool discovery
 
-For device detection, ESP Loader tries these commands in order:
+For device detection, programming, and erase, ESP Loader tries these sources in order:
 
-| Windows | Linux |
-| --- | --- |
-| `esptool.exe` | `esptool` |
-| `esptool.py` | `esptool.py` |
-| `py -m esptool` | `python3 -m esptool` |
-| `python -m esptool` |  |
+| Priority | Windows | Linux |
+| --- | --- | --- |
+| 1 | Path verified in **Settings** | Path verified in **Settings** |
+| 2 | Bundled `esptool.exe` 5.4.0 beside ESP Loader | Bundled `esptool` 5.4.0 beside ESP Loader |
+| 3 | `esptool.exe`, then `esptool.py` on `PATH` | `esptool`, then `esptool.py` on `PATH` |
+| 4 | `py -m esptool`, then `python -m esptool` | `python3 -m esptool`, then `python -m esptool` |
 
-Before flash or erase, ESP Loader probes the same candidates with `version` and requires esptool 4 or newer. If the Python module is missing, **Test** installs it with `pip --user` and retries once. It translates command and flash-option names for esptool 4's underscore syntax. Bundled esptool binaries are planned but are not part of the repository today.
+The **Settings** page validates the selected file with `esptool version` before saving it in the portable `esp_loader_settings.json` file. This user-selected path always has priority over the bundled executable. Leave the field empty to restore automatic discovery. Every flash or erase probes the candidates with `version` and requires esptool 4 or newer. If neither the configured nor bundled executable works and the Python module is missing, **Test** can install it with `pip --user` and retry once. ESP Loader translates command and flash-option names for esptool 4's underscore syntax.
 
 ## Safety
 
@@ -242,6 +245,7 @@ Screenshots will be added before the first public release. The planned set is:
 - serial monitor and plot.
 
 No image paths are referenced yet, so the README remains complete in clones without screenshot assets.
+The capture procedure and proposed filenames are documented in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## Development
 
@@ -250,6 +254,13 @@ The main entry point is `lib/main.dart`. Device/process, project import, firmwar
 ```bash
 flutter analyze
 flutter test
+```
+
+The default test run skips the opt-in documentation golden suite. Maintainers
+can regenerate and verify the screenshot assets on Linux with:
+
+```bash
+flutter test --run-skipped --tags documentation --update-goldens test/documentation_screenshots_test.dart
 ```
 
 Automated tests cover chip and flash-size output parsing; `flasher_args.json`; PlatformIO, ESP-IDF, Arduino, and production-package imports; binary partition tables; image addresses and overlap/capacity validation; firmware-target mismatches; esptool 4/5 command construction; progress parsing; process failure, timeout, and cancellation; serial buffering and controls; portable profiles; plot parsing and discovery; and primary widget state transitions.
@@ -262,14 +273,23 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Please rep
 
 ## License
 
-This repository does not currently contain a license. Consequently, public visibility alone does not grant permission to use, modify, or redistribute the code. An explicit open-source license must be selected before public promotion; MIT is the suggested default if broad reuse is the goal.
+ESP Loader is released under the [MIT License](LICENSE), copyright 2026
+Gianluca Vivenzi. The bundled esptool executable remains a separate component
+under GPL-2.0-or-later; its license, provenance, version, and source location
+are documented in [`third_party/esptool/`](third_party/esptool/).
 
 ## Releases
 
 There are no official releases yet. When packages are ready, this section should link directly to GitHub Releases and list the application version, Windows and Linux artifacts, release notes, and SHA-256 checksums. Until then, the version in application metadata should not be interpreted as a published stable release.
 
-On Windows, `release.bat` builds and copies the complete Flutter bundle to
-`release\`. When Enigma Virtual Box is installed, it also creates the single-file
-`release_portable\esp_loader.exe`; otherwise the regular bundle remains usable.
+On Windows, `release.bat` builds and copies the complete Flutter bundle,
+including `esptool.exe`, to `release\`. When Enigma Virtual Box is installed,
+it also creates the single-file `release_portable\esp_loader.exe`; otherwise
+the regular standalone bundle remains usable.
+
+On Linux, provide the official `linuxdeploy` AppImage through
+`LINUXDEPLOY_PATH` and run `./release.sh`. The script creates
+`release/ESP-Loader-<version>-linux-x86_64.AppImage`, containing the Flutter
+runtime, discovered native libraries, esptool, and its license.
 
 See [CHANGELOG.md](CHANGELOG.md) for unreleased development changes and [docs/PUBLISHING.md](docs/PUBLISHING.md) for the proposed GitHub description, topics, screenshot checklist, and release checklist.

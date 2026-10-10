@@ -1,0 +1,3 @@
+tags:
+  documentation:
+    skip: Documentation golden tests are opt-in and platform-specific.

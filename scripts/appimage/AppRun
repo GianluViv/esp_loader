@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+app_dir="${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}"
+export LD_LIBRARY_PATH="$app_dir/usr/lib:$app_dir/usr/bin/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$app_dir/usr/bin/esp_loader" "$@"

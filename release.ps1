@@ -8,6 +8,11 @@ $buildOutput = Join-Path $projectRoot "build\windows\x64\runner\Release"
 $releaseDir = Join-Path $projectRoot "release"
 $portableExe = Join-Path $projectRoot "release_portable\esp_loader.exe"
 $packScript = Join-Path $projectRoot "scripts\pack_portable_exe.ps1"
+$bundledEsptool = Join-Path $projectRoot "third_party\esptool\5.4.0\windows-x64\esptool.exe"
+
+if (-not (Test-Path -LiteralPath $bundledEsptool -PathType Leaf)) {
+    throw "esptool standalone non trovato: $bundledEsptool"
+}
 
 Write-Host "Compilazione Windows Release..." -ForegroundColor Cyan
 & flutter build windows --release
@@ -18,6 +23,16 @@ if ($LASTEXITCODE -ne 0) {
 $mainExe = Join-Path $buildOutput "esp_loader.exe"
 if (-not (Test-Path -LiteralPath $mainExe -PathType Leaf)) {
     throw "Output della build non trovato: $mainExe"
+}
+$packagedEsptool = Join-Path $buildOutput "esptool.exe"
+if (-not (Test-Path -LiteralPath $packagedEsptool -PathType Leaf)) {
+    throw "La build non contiene esptool.exe: $packagedEsptool"
+}
+
+Write-Host "Verifica di esptool incluso..." -ForegroundColor Cyan
+& $packagedEsptool version
+if ($LASTEXITCODE -ne 0) {
+    throw "esptool incluso non eseguibile (codice $LASTEXITCODE)."
 }
 
 if (Test-Path -LiteralPath $releaseDir) {

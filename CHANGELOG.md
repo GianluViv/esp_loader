@@ -19,12 +19,15 @@ ESP Loader has no official releases yet. The package version in Flutter metadata
 - Flash/monitor coordination and firmware autoload.
 - Serial plotting through explicit `PLOT:` records and compatibility prefixes.
 - Portable persistence of the flash-image list and selected project.
+- Persistent selection, validation, and shared discovery of an explicit esptool executable.
+- Official esptool 5.4.0 standalone executables bundled for Windows and Linux x86_64 packages.
+- MIT licensing for ESP Loader, copyright 2026 Gianluca Vivenzi.
 
 ### Known limitations
 
 - No public Windows or Linux package is available.
 - Windows runtime and per-family hardware validation are incomplete.
 - Automatic serial reconnection is not implemented.
+- Full-chip erase does not automatically release and reopen an active serial monitor connection.
 - Autoload, monitor coordination, and plotting need further physical-device validation.
-- Settings persistence is limited, and the esptool-path control is a placeholder.
-- No project license has been selected.
+- Theme and broader UI settings are not persisted yet.

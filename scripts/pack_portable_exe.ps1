@@ -122,8 +122,8 @@ $entriesXml
 	<Packaging><Enabled>false</Enabled></Packaging>
 	<Options>
 		<ShareVirtualSystem>true</ShareVirtualSystem>
-		<MapExecutableWithTemporaryFile>false</MapExecutableWithTemporaryFile>
-		<AllowRunningOfVirtualExeFiles>false</AllowRunningOfVirtualExeFiles>
+		<MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile>
+		<AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles>
 	</Options>
 </>
 "@

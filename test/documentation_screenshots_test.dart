@@ -1,7 +1,9 @@
+@Tags(['documentation'])
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:esp_loader/esptool_service.dart';
 import 'package:esp_loader/local_profile_service.dart';
@@ -13,16 +15,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _ScreenshotProfile implements FlashProfileStore {
-  _ScreenshotProfile(this.images, {this.projectPath});
+  _ScreenshotProfile(this.images);
 
   final List<SavedFlashImage> images;
-  final String? projectPath;
 
   @override
   Future<List<SavedFlashImage>?> loadImages() async => images;
 
   @override
-  Future<String?> loadProjectPath() async => projectPath;
+  Future<String?> loadProjectPath() async => null;
 
   @override
   Future<void> saveImages(List<SavedFlashImage> images) async {}
@@ -83,10 +84,13 @@ void main() {
   }
 
   Future<void> capture(WidgetTester tester, String name) async {
+    await tester.pump(const Duration(milliseconds: 200));
     await expectLater(
       find.byKey(screenshotKey),
       matchesGoldenFile('../docs/images/$name.png'),
     );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 200));
   }
 
   Future<EspConnectionResult> detectedDevice({
@@ -150,9 +154,12 @@ void main() {
   });
 
   testWidgets('ESP-IDF import screenshot', (tester) async {
-    final root = Directory.systemTemp.createTempSync(
-      'esp_loader_greenhouse_controller_',
+    final root = Directory(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}'
+      'esp_loader_greenhouse_controller',
     );
+    if (root.existsSync()) root.deleteSync(recursive: true);
+    root.createSync();
     addTearDown(() => root.deleteSync(recursive: true));
     File('${root.path}/CMakeLists.txt')
       ..createSync()
@@ -196,15 +203,11 @@ void main() {
         selectProjectDirectory: () async => root.path,
       ),
     );
-    await tester.tap(find.byKey(const Key('select-project-folder')));
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 100)),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.tap(find.byKey(const Key('test-device-button')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
+    final dynamic selectProject = tester
+        .widget<Button>(find.byKey(const Key('select-project-folder')))
+        .onPressed;
+    await tester.runAsync(() async => selectProject());
+    await tester.pumpAndSettle();
     await capture(tester, 'esp-idf-import');
   });
 
@@ -223,6 +226,8 @@ void main() {
     await tester.tap(find.byKey(const Key('monitor-connect-button')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.widgetWithText(ToggleButton, 'Timestamp'));
+    await tester.pump();
     connection.controller.add(
       utf8.encode(
         'I (128) SYSTEM: GS240A ready\n'

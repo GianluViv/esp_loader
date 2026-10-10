@@ -304,6 +304,21 @@ void main() {
     await service.program(request(), onLog: (_) {}, onProgress: (_) {});
     expect(probes, 2);
   });
+  test('probes and uses the configured esptool path first', () async {
+    const configured = '/custom/tools/esptool';
+    final executables = <String>[];
+    final service = FlashService(
+      configuredPath: () => configured,
+      launch: (executable, args) async {
+        executables.add(executable);
+        return args.last == 'version' ? version() : (TestProcess()..finish(0));
+      },
+    );
+
+    await service.program(request(), onLog: (_) {}, onProgress: (_) {});
+
+    expect(executables, [configured, configured]);
+  });
   test('real process streams are drained before returning', () async {
     final log = StringBuffer();
     final service = FlashService(

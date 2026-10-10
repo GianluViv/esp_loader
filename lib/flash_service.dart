@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'esptool_service.dart';
+
 class FlashImage {
   const FlashImage(this.address, this.path);
   final String address;
@@ -157,6 +159,7 @@ typedef ProcessLauncher = Future<Process> Function(String, List<String>);
 class FlashService {
   FlashService({
     ProcessLauncher? launch,
+    this.configuredPath,
     this.timeout = const Duration(minutes: 10),
   }) : _launch =
            launch ??
@@ -166,6 +169,7 @@ class FlashService {
              environment: {'PYTHONUNBUFFERED': '1'},
            ));
   final ProcessLauncher _launch;
+  final String? Function()? configuredPath;
   final Duration timeout;
   Process? _process;
   Timer? _killTimer;
@@ -218,55 +222,41 @@ class FlashService {
     try {
       final arguments = await buildArguments();
       _checkCancelled();
-      final candidates = Platform.isWindows
-          ? [
-              ('esptool.exe', <String>[]),
-              ('esptool.py', <String>[]),
-              ('py', ['-m', 'esptool']),
-              ('python', ['-m', 'esptool']),
-            ]
-          : [
-              ('esptool', <String>[]),
-              ('esptool.py', <String>[]),
-              ('python3', ['-m', 'esptool']),
-            ];
-      (String, List<String>)? tool;
+      EspToolCandidate? tool;
       var legacy = false;
-      for (final candidate in candidates) {
+      for (final candidate in espToolCandidates(
+        configuredPath: configuredPath?.call(),
+      )) {
         _checkCancelled();
         try {
           final probe = await _execute(
-            candidate.$1,
-            [...candidate.$2, 'version'],
+            candidate.executable,
+            [...candidate.prefixArguments, 'version'],
             const Duration(seconds: 15),
             (_) {},
           );
           _checkCancelled();
-          final version = RegExp(
-            r'(?:esptool(?:\.py)?\s+v?|^v?)(\d+)\.',
-            multiLine: true,
-            caseSensitive: false,
-          ).firstMatch(probe.$2);
-          if (probe.$1 == 0 && version != null) {
-            final major = int.parse(version[1]!);
+          final major = detectEsptoolMajor(probe.$2);
+          if (probe.$1 == 0 && major != null) {
             if (major < 4) continue;
             legacy = major == 4;
             tool = candidate;
             break;
           }
-          onLog('Tool probe ${candidate.$1}: ${probe.$2}\n');
+          onLog('Tool probe ${candidate.executable}: ${probe.$2}\n');
         } on ProcessException catch (error) {
           if (error.errorCode != 2) rethrow;
         }
       }
       if (tool == null) {
         throw StateError(
-          'esptool 4 or newer was not found. Install it or add it to PATH.',
+          'esptool 4 or newer was not found. Select it in Settings, install '
+          'it beside ESP Loader, or add it to PATH.',
         );
       }
       _checkCancelled();
       final args = [
-        ...tool.$2,
+        ...tool.prefixArguments,
         ...arguments.map(
           (arg) =>
               legacy &&
@@ -278,17 +268,17 @@ class FlashService {
         ),
       ];
       onLog(
-        '\$ ${tool.$1} ${args.map((arg) => '"${arg.replaceAll('"', '\\"')}"').join(' ')}\n',
+        '\$ ${tool.executable} ${args.map((arg) => '"${arg.replaceAll('"', '\\"')}"').join(' ')}\n',
       );
       final tracker = FlashProgress();
-      final result = await _execute(tool.$1, args, timeout, (chunk) {
+      final result = await _execute(tool.executable, args, timeout, (chunk) {
         onLog(chunk);
         final progress = tracker.add(chunk);
         if (progress != null) onProgress(progress);
       });
       _checkCancelled();
       if (result.$1 != 0) {
-        throw ProcessException(tool.$1, args, result.$2, result.$1);
+        throw ProcessException(tool.executable, args, result.$2, result.$1);
       }
       onProgress(1);
     } finally {
